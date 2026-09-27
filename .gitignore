@@ -1,0 +1,10 @@
+# Personal financial data must never be committed to this public repository.
+data/*
+!data/.gitkeep
+rules/generated*.json
+rules/private*.json
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
