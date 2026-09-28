@@ -12,11 +12,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from gzp_finance.rules import normalize_concept  # noqa: E402
+from gzp_finance.rules import amount_to_cents, normalize_concept  # noqa: E402
 
 TARGET_PREFIX = "target_"
 
 RULE_SPECS = [
+    ("concept_amount_bank_type", 120, ("source_bank", "concept_key", "amount_cents", "bank_type")),
+    ("concept_amount", 115, ("source_bank", "concept_key", "amount_cents")),
     ("concept_bank_type", 100, ("source_bank", "concept_key", "bank_type")),
     ("concept_bank_category", 95, ("source_bank", "concept_key", "bank_category")),
     ("concept_direction", 90, ("source_bank", "concept_key", "direction")),
@@ -32,6 +34,7 @@ def load_rows(path: Path, allowed_confidence: set[str]) -> list[dict[str, str]]:
     for row in rows:
         source = row.get("concept_raw") or row.get("description_raw") or ""
         row["concept_key"] = normalize_concept(source)
+        row["amount_cents"] = amount_to_cents(row.get("amount_eur"))
     return rows
 
 
@@ -39,8 +42,6 @@ def stable_outputs(rows: list[dict[str, str]], targets: list[str]) -> dict[str, 
     outputs: dict[str, str] = {}
     for target in targets:
         values = [row.get(target, "") for row in rows]
-        # Conservative by design: every supporting row must contain exactly the same
-        # non-empty value before the field becomes deterministic.
         if values and values[0] and len(set(values)) == 1:
             outputs[target] = values[0]
     return outputs
@@ -104,7 +105,7 @@ def main() -> None:
             "min_support": args.min_support,
             "required_historical_consistency": 1.0,
             "allowed_match_confidence": sorted(set(args.confidence)),
-            "note": "A rule may fill only some target fields. Missing fields continue to ML/manual review.",
+            "note": "Rules may use concept + exact signed amount. Missing target fields continue to ML/manual review.",
         },
         "stats": {"source_rows": len(rows), "rules": len(rules)},
         "rules": rules,
