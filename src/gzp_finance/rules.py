@@ -45,6 +45,7 @@ def transaction_context(transaction: dict[str, Any]) -> dict[str, str]:
         "source_bank": str(transaction.get("source_bank") or ""),
         "concept_key": normalize_concept(str(raw)),
         "amount_cents": amount_to_cents(transaction.get("amount_eur")),
+        "counterparty_iban": str(transaction.get("counterparty_iban") or ""),
         "bank_type": str(transaction.get("bank_type") or ""),
         "bank_category": str(transaction.get("bank_category") or ""),
         "direction": str(transaction.get("direction") or ""),
@@ -52,7 +53,18 @@ def transaction_context(transaction: dict[str, Any]) -> dict[str, str]:
 
 
 def _matches(rule: dict[str, Any], context: dict[str, str]) -> bool:
-    return all(context.get(key, "") == str(value) for key, value in rule["match"].items())
+    for key, value in rule["match"].items():
+        if key == "amount_cents_min":
+            current = context.get("amount_cents", "")
+            if current == "" or int(current) < int(value):
+                return False
+        elif key == "amount_cents_max":
+            current = context.get("amount_cents", "")
+            if current == "" or int(current) > int(value):
+                return False
+        elif context.get(key, "") != str(value):
+            return False
+    return True
 
 
 def apply_rules(transaction: dict[str, Any], rules: Iterable[dict[str, Any]]) -> dict[str, Any]:
