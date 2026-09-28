@@ -43,6 +43,53 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(result["values"]["target_subtipo"], "A1")
         self.assertEqual(len(result["conflicts"]), 1)
 
+    def test_confirmed_rule_can_use_amount_range(self):
+        rules = [
+            {
+                "id": "btc-plan",
+                "priority": 1000,
+                "support": 1,
+                "match": {
+                    "source_bank": "Trade Republic",
+                    "concept_key": "bitcoin",
+                    "bank_type": "BUY",
+                    "amount_cents_min": "-22000",
+                    "amount_cents_max": "-18000",
+                },
+                "set": {"target_detalle": "Plan de ahorro bitcoin"},
+            }
+        ]
+        tx = {
+            "source_bank": "Trade Republic",
+            "concept_raw": "Bitcoin",
+            "amount_eur": -199.96,
+            "bank_type": "BUY",
+        }
+        self.assertEqual(apply_rules(tx, rules)["values"]["target_detalle"], "Plan de ahorro bitcoin")
+
+    def test_confirmed_rule_can_use_counterparty_iban(self):
+        rules = [
+            {
+                "id": "own-transfer",
+                "priority": 1000,
+                "support": 1,
+                "match": {
+                    "source_bank": "Trade Republic",
+                    "counterparty_iban": "ES0000000000000000000000",
+                    "bank_type": "TRANSFER_INSTANT_INBOUND",
+                },
+                "set": {"target_categoria_general": "11. Mov Cuentas"},
+            }
+        ]
+        tx = {
+            "source_bank": "Trade Republic",
+            "concept_raw": "GONZALO",
+            "amount_eur": 400,
+            "counterparty_iban": "ES0000000000000000000000",
+            "bank_type": "TRANSFER_INSTANT_INBOUND",
+        }
+        self.assertEqual(apply_rules(tx, rules)["values"]["target_categoria_general"], "11. Mov Cuentas")
+
     def test_same_concept_can_be_disambiguated_by_exact_amount(self):
         rules = [
             {
