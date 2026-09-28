@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,11 +31,20 @@ def normalize_concept(value: str | None) -> str:
     return " ".join(tokens)
 
 
+def amount_to_cents(value: Any) -> str:
+    """Canonical signed amount in cents, suitable for exact deterministic rules."""
+    if value in (None, ""):
+        return ""
+    amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return str(int(amount * 100))
+
+
 def transaction_context(transaction: dict[str, Any]) -> dict[str, str]:
     raw = transaction.get("concept_raw") or transaction.get("description_raw") or ""
     return {
         "source_bank": str(transaction.get("source_bank") or ""),
         "concept_key": normalize_concept(str(raw)),
+        "amount_cents": amount_to_cents(transaction.get("amount_eur")),
         "bank_type": str(transaction.get("bank_type") or ""),
         "bank_category": str(transaction.get("bank_category") or ""),
         "direction": str(transaction.get("direction") or ""),
