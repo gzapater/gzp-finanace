@@ -17,6 +17,7 @@ class RuleTests(unittest.TestCase):
         tx = {
             "source_bank": "Example Bank",
             "concept_raw": "Example Shop 1234",
+            "amount_eur": -10.0,
             "bank_type": "CARD",
             "bank_category": "Shopping",
             "direction": "gasto",
@@ -41,6 +42,28 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(result["values"]["target_categoria_general"], "A")
         self.assertEqual(result["values"]["target_subtipo"], "A1")
         self.assertEqual(len(result["conflicts"]), 1)
+
+    def test_same_concept_can_be_disambiguated_by_exact_amount(self):
+        rules = [
+            {
+                "id": "transfer",
+                "priority": 120,
+                "support": 13,
+                "match": {"source_bank": "CaixaBank", "concept_key": "pag nominas", "amount_cents": "-40000"},
+                "set": {"target_categoria_general": "Mov Cuentas"},
+            },
+            {
+                "id": "rent",
+                "priority": 120,
+                "support": 14,
+                "match": {"source_bank": "CaixaBank", "concept_key": "pag nominas", "amount_cents": "-82500"},
+                "set": {"target_categoria_general": "Casa"},
+            },
+        ]
+        tx_transfer = {"source_bank": "CaixaBank", "concept_raw": "PAG NOMINAS", "amount_eur": -400}
+        tx_rent = {"source_bank": "CaixaBank", "concept_raw": "PAG NOMINAS", "amount_eur": -825}
+        self.assertEqual(apply_rules(tx_transfer, rules)["values"]["target_categoria_general"], "Mov Cuentas")
+        self.assertEqual(apply_rules(tx_rent, rules)["values"]["target_categoria_general"], "Casa")
 
 
 if __name__ == "__main__":
