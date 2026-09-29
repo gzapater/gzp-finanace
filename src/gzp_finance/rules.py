@@ -112,4 +112,4 @@ def apply_rules(transaction: dict[str, Any], rules: Iterable[dict[str, Any]]) ->
 
 def load_rules(path: str | Path) -> list[dict[str, Any]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return list(payload.get("rules", payload))
+    return list(payload["rules"] if isinstance(payload, dict) else payload)

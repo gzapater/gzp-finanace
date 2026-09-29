@@ -3,6 +3,22 @@ data/*
 !data/.gitkeep
 rules/generated*.json
 rules/private*.json
+**/*_private.json
+.env
+.env.*
+!.env.example
+*.dump
+*.backup
+*.joblib
+*.db
+private/
+models/
+backups/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
 
 __pycache__/
 *.py[cod]

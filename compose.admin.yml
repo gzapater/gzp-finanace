@@ -1,0 +1,5 @@
+# Optional SSH tunnel endpoint. PostgreSQL stays bound to VPS loopback.
+services:
+  db:
+    ports:
+      - "127.0.0.1:${DB_ADMIN_PORT:-55433}:5432"
