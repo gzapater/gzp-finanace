@@ -40,3 +40,36 @@ def test_invalid_import_is_atomic(engine):
     bad = MI + "bad;bad;Example;100;EUR\n"
     assert c.post("/api/imports", data={"bank": "MyInvestor"}, files={"file": ("a.csv", bad)}).status_code == 422
     assert c.get("/api/transactions").json()["total"] == 0
+
+
+def test_large_import_keeps_other_requests_responsive(engine, monkeypatch):
+    import asyncio
+    import threading
+    import time
+    import httpx
+    import gzp_finance.web as web
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_import(*args, **kwargs):
+        entered.set()
+        release.wait(3)
+        return {"inserted": 0}
+
+    monkeypatch.setattr(web, "import_statement", slow_import)
+
+    async def exercise():
+        app=create_app(engine, username="test", password="synthetic-test-password")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", auth=("test","synthetic-test-password")) as c:
+            index=await c.get("/")
+            token=re.search(r'name="csrf-token" content="([^"]+)"',index.text)[1]
+            started=time.monotonic()
+            upload=asyncio.create_task(c.post("/api/imports",headers={"x-csrf-token":token},data={"bank":"MyInvestor"},files={"file":("a.csv",MI)}))
+            try:
+                assert await asyncio.to_thread(entered.wait,1)
+                response=await asyncio.wait_for(c.get("/api/validation"),1)
+                assert response.status_code == 200
+                assert time.monotonic()-started < 2
+            finally:
+                release.set()
+                await upload
+    asyncio.run(exercise())

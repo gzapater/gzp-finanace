@@ -88,6 +88,7 @@ def test_history_api_and_origin_filters_are_authenticated_and_keep_reference_lab
     assert c.get('/api/transactions?origin=new').json()['total'] == 0
     assert c.get('/api/transactions?origin=historical').json()['total'] == 1
     assert c.get('/api/history').json()['items'][0]['values']['target_subtipo'] == 'Original label'
+    assert 'Original label' in c.get('/api/vocabulary').json()['fields']['target_subtipo']
     assert c.get('/api/transactions?origin=invalid').status_code == 422
     assert c.get('/api/history?offset=-1').status_code == 422
     assert c.get('/api/validation').json()['excel_records'] == 1

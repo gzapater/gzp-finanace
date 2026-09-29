@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text, update
 
-from .db import (Classification, Import, ModelVersion, Prediction, Rule,
+from .db import (Classification, HistoricalRecord, Import, ModelVersion, Prediction, Rule,
                  TrainingExample, Transaction, TransactionComponent, now, uid)
 from .domain import (MAIN_TARGETS, TARGETS, digest, snapshot,
                      validate_match, validate_values)
@@ -274,6 +274,7 @@ def vocabulary(session) -> dict:
     fields = {field: set() for field in TARGETS}
     subtypes = defaultdict(set)
     sources = [e.final_values for e in session.scalars(select(TrainingExample))]
+    sources.extend(h.values for h in session.scalars(select(HistoricalRecord)))
     sources.extend(c.values for c in session.scalars(select(Classification).where(
         Classification.confirmed_by_user.is_(True))))
     sources.extend(r.set_values for r in session.scalars(select(Rule)))

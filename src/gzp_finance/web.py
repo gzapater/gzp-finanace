@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
+from starlette.concurrency import run_in_threadpool
 
 from .db import Classification, HistoricalRecord, Prediction, Rule, Transaction, make_engine, session_scope
 from .history import validation_summary
@@ -108,8 +109,10 @@ def create_app(engine=None, *, username=None, password=None):
         await file.close()
         if len(data) > 10 * 1024 * 1024:
             raise HTTPException(413, "Máximo 10 MB por extracto")
-        with session_scope(engine) as s:
-            return import_statement(s, bank, file.filename or "extracto", data, models=active_bundle(s))
+        def process():
+            with session_scope(engine) as s:
+                return import_statement(s, bank, file.filename or "extracto", data, models=active_bundle(s))
+        return await run_in_threadpool(process)
 
     @app.get("/api/transactions", dependencies=[Depends(authenticate)])
     def transactions(bank: str = "", status: str = "", origin: str = "", offset: int = 0, limit: int = 50):
