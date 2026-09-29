@@ -189,6 +189,13 @@ async function loadValidation() {
   for (const [title,value] of [['Movimientos importados',r.imported_records],['Vinculados al histórico',r.historical_records],['Nuevos / sin etiqueta histórica',r.new_records],['Filas del Excel original',r.excel_records]]) {
     const card = node('div',undefined,'card'); card.append(node('p',title,'hint'), node('strong',String(value))); $('#validation-kpis').append(card);
   }
+  $('#excel-bank-totals').replaceChildren();
+  for (const b of r.excel_banks) {
+    const tr=node('tr'); tr.append(node('td',b.bank),node('td',String(b.totals.count)),node('td',euro.format(b.totals.net),'amount'));
+    $('#excel-bank-totals').append(tr);
+  }
+  $('#excel-total-count').textContent=String(r.excel_total.count);
+  $('#excel-total-net').textContent=euro.format(r.excel_total.net);
   $('#bank-totals').replaceChildren(); $('#excel-comparison').replaceChildren();
   for (const b of r.banks) {
     const tr=node('tr');
@@ -201,6 +208,7 @@ async function loadValidation() {
     for (const v of [c.excel.net,c.bank.net,c.delta.net]) row.append(node('td',euro.format(v),'amount'));
     const result=node('td'); result.append(node('strong', c.excel.count ? c.matches ? 'Coincide el subconjunto' : `${c.mismatched_rows} filas con diferencias` : 'Sin filas comparables'));
     result.append(node('small', `${b.unlinked_rows} sin vincular · ${b.ambiguous_rows} ambiguas · ${b.grouped_rows} filas agrupadas · ${b.excel.missing_amount} sin importe`));
+    result.append(node('small', `Fuera de comparación: ${b.outside_comparison.count} filas · ${euro.format(b.outside_comparison.net)} netos${b.text_amount_rows ? ` · ${b.text_amount_rows} importes escritos como texto` : ''}`));
     result.append(node('small', `Diferencia entradas ${euro.format(c.delta.income)} · salidas ${euro.format(c.delta.expenses)}`)); row.append(result); $('#excel-comparison').append(row);
   }
 }

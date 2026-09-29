@@ -89,6 +89,11 @@ Cada registro conserva `source_row` (fila original, contando la cabecera), `sour
 `manual_date` ISO, `amount_eur` decimal como texto (null si falta) y `values` con
 los campos `target_*`. Canonicaliza únicamente los alias de los tres bancos soportados;
 conserva los demás bancos como referencia. No cambies las etiquetas originales.
+Si una celda de «Importe (€)» contiene texto que parece un número, conserva su
+importe para el cruce y añade `"excel_amount_is_numeric": false` a esa fila del JSON.
+Así el neto del Excel reproduce la tabla dinámica, que omite las celdas de texto.
+Ese metadato se puede añadir después de la primera carga sin duplicar el histórico:
+recarga el mismo JSON enriquecido para actualizar la referencia.
 Carga ese JSON y el CSV de cruce original fuera del contexto de Docker:
 
 ```bash
@@ -103,9 +108,10 @@ La recarga del mismo JSON es idempotente y se rechaza mezclar otra versión del 
 
 En Revisar, filtra por nuevos/sin etiqueta, vinculados al histórico o todos.
 Histórico Excel conserva las etiquetas y la confianza del cruce. Validación muestra
-recuentos, entradas, salidas y neto por banco; compara importes solo para vínculos
+el neto de los doce bancos del Excel y su total, además de recuentos, entradas,
+salidas y neto de los tres bancos importados; compara importes solo para vínculos
 uno a uno, con diferencias por fila, entradas, salidas y neto. Los fills agrupados,
-filas sin importe y referencias sin vínculo quedan fuera de esa comparación y se
+filas sin importe numérico y referencias sin vínculo quedan fuera de esa comparación y se
 cuentan explícitamente. Una coincidencia parcial no valida el histórico completo.
 Estas sumas son movimientos, no saldos de cuenta.
 

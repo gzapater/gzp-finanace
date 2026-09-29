@@ -163,6 +163,7 @@ class HistoricalRecord(Base):
     source_bank: Mapped[str] = mapped_column(String(40), index=True)
     manual_date: Mapped[datetime] = mapped_column(Date)
     amount_eur: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+    excel_amount_is_numeric: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     values: Mapped[dict] = mapped_column(J)
     bank_input: Mapped[dict] = mapped_column(J, default=dict)
     match_confidence: Mapped[str] = mapped_column(String(20), default="")

@@ -77,6 +77,27 @@ def test_amount_difference_and_missing_source_are_visible(session,tmp_path):
     assert not summary['comparison']['matches']
 
 
+def test_excel_text_amount_does_not_enter_pivot_kpis_but_keeps_bank_match(session,tmp_path):
+    import_statement(session,'MyInvestor','a.csv',MI.encode())
+    p,d=reference(tmp_path)
+    assert load_reference(session,p,d)['inserted'] == 1
+    h=session.scalar(select(HistoricalRecord))
+    original_hash=h.source_hash
+    payload=json.loads(p.read_text())
+    payload['records'][0]['excel_amount_is_numeric']=False
+    p.write_text(json.dumps(payload))
+    assert load_reference(session,p,d)['inserted'] == 0
+    assert h.source_hash == original_hash and h.transaction_id
+    assert not h.excel_amount_is_numeric
+    stats=validation_summary(session)
+    assert stats['excel_total']['net'] == '0.00'
+    assert stats['excel_total']['missing_amount'] == 1
+    bank=stats['banks'][2]
+    assert bank['text_amount_rows'] == 1
+    assert bank['comparison']['excel']['count'] == 0
+    assert bank['outside_comparison']['count'] == 1
+
+
 def test_history_api_and_origin_filters_are_authenticated_and_keep_reference_labels(engine,tmp_path):
     from sqlalchemy.orm import Session
     with Session(engine) as s:

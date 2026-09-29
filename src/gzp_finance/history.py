@@ -17,17 +17,27 @@ from .rules import normalize_concept
 def load_reference(session, path: Path, dataset: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     # Extraction retains every original row, including banks outside the three importers.
-    source_hash = digest(payload)
+    # Cell typing is supplementary metadata: adding it must not change the identity
+    # of an already loaded workbook or duplicate its historical rows.
+    identity = {**payload, "records": [
+        {k: v for k, v in row.items() if k != "excel_amount_is_numeric"}
+        for row in payload["records"]]}
+    source_hash = digest(identity)
     with dataset.open(encoding="utf-8-sig", newline="") as f:
         bank_rows = {(r["source_bank"], int(r["source_row"])): r for r in csv.DictReader(f)}
-    existing = set(session.scalars(select(HistoricalRecord.source_row).where(
-        HistoricalRecord.source_hash == source_hash)))
+    existing = {r.source_row: r for r in session.scalars(select(HistoricalRecord).where(
+        HistoricalRecord.source_hash == source_hash))}
     other_source = session.scalar(select(HistoricalRecord.id).where(HistoricalRecord.source_hash != source_hash))
     if other_source:
         raise ValueError("Ya existe otro Excel de referencia; no mezcles versiones del mismo histórico")
     inserted = 0
     for row in payload["records"]:
+        numeric = row.get("excel_amount_is_numeric", True)
+        if not isinstance(numeric, bool):
+            raise ValueError("excel_amount_is_numeric debe ser booleano")
         if row["source_row"] in existing:
+            if "excel_amount_is_numeric" in row:
+                existing[row["source_row"]].excel_amount_is_numeric = numeric
             continue
         original = validate_values(row["values"])
         matched = bank_rows.get((row["source_bank"], row["source_row"]), {})
@@ -37,6 +47,7 @@ def load_reference(session, path: Path, dataset: Path) -> dict:
             source_sheet=payload["sheet"], source_row=row["source_row"], source_bank=row["source_bank"],
             manual_date=date.fromisoformat(row["manual_date"]),
             amount_eur=Decimal(row["amount_eur"]) if row["amount_eur"] is not None else None,
+            excel_amount_is_numeric=numeric,
             values=original, bank_input=inputs, match_confidence=matched.get("match_confidence", "")))
         inserted += 1
     session.flush()
@@ -102,6 +113,13 @@ def validation_summary(session) -> dict:
     by_id = {t.id: t for t in txs}
     linked_ids = {r.transaction_id for r in refs if r.transaction_id}
     banks = []
+    excel_banks = []
+    source_labels = {"CaixaBank": "01. La Caixa", "MyInvestor": "03. MyInvestor",
+                     "Trade Republic": "04. Trade Republic"}
+    for bank in sorted({r.source_bank for r in refs}, key=lambda name: source_labels.get(name, name)):
+        original = [r for r in refs if r.source_bank == bank]
+        excel_banks.append({"bank": source_labels.get(bank, bank), "totals": totals(
+            r.amount_eur if r.excel_amount_is_numeric else None for r in original)})
     for bank in BANKS:
         imported = [t for t in txs if t.source_bank == bank]
         original = [r for r in refs if r.source_bank == bank]
@@ -111,7 +129,8 @@ def validation_summary(session) -> dict:
             if r.transaction_id:
                 links[r.transaction_id].append(r)
         comparable = [rr[0] for tid, rr in links.items() if len(rr) == 1 and
-                      rr[0].amount_eur is not None and tid in by_id]
+                      rr[0].amount_eur is not None and rr[0].excel_amount_is_numeric and tid in by_id]
+        comparable_ids = {r.id for r in comparable}
         excel = totals(r.amount_eur for r in comparable)
         actual = totals(by_id[r.transaction_id].amount_eur for r in comparable)
         deltas = {k: str((Decimal(actual[k]) - Decimal(excel[k])).quantize(Decimal('.01')))
@@ -120,13 +139,20 @@ def validation_summary(session) -> dict:
         banks.append({"bank": bank, "imported": totals(t.amount_eur for t in imported),
             "new": totals(t.amount_eur for t in imported if t.id not in linked_ids),
             "historical": totals(t.amount_eur for t in imported if t.id in linked_ids),
-            "excel": totals(r.amount_eur for r in original), "linked_rows": sum(len(v) for v in links.values()),
+            "excel": totals(r.amount_eur if r.excel_amount_is_numeric else None for r in original),
+            "outside_comparison": totals(r.amount_eur if r.excel_amount_is_numeric else None
+                                         for r in original if r.id not in comparable_ids),
+            "text_amount_rows": sum(r.amount_eur is not None and not r.excel_amount_is_numeric
+                                    for r in original),
+            "linked_rows": sum(len(v) for v in links.values()),
             "unlinked_rows": sum(not r.transaction_id for r in original),
             "ambiguous_rows": sum(r.linkage_status == "ambiguous" for r in original),
             "grouped_rows": sum(len(rr) for rr in links.values() if len(rr) > 1),
             "confirmed": sum(t.id in confirmed for t in imported),
             "comparison": {"excel": excel, "bank": actual, "delta": deltas,
                            "mismatched_rows": mismatched, "matches": bool(comparable) and mismatched == 0}})
-    return {"banks": banks, "excel_records": len(refs), "imported_records": len(txs),
+    return {"banks": banks, "excel_banks": excel_banks,
+            "excel_total": totals(r.amount_eur if r.excel_amount_is_numeric else None for r in refs),
+            "excel_records": len(refs), "imported_records": len(txs),
             "historical_records": len(linked_ids), "new_records": len(txs) - len(linked_ids),
             "confirmed_records": len(confirmed)}
