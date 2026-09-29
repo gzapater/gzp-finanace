@@ -151,6 +151,25 @@ class ModelVersion(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class HistoricalRecord(Base):
+    """Original Excel labels are a reference, never a second cash movement."""
+    __tablename__ = "historical_records"
+    __table_args__ = (UniqueConstraint("source_hash", "source_row"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    source_hash: Mapped[str] = mapped_column(String(64))
+    source_file: Mapped[str] = mapped_column(String(255))
+    source_sheet: Mapped[str] = mapped_column(String(100))
+    source_row: Mapped[int] = mapped_column(Integer)
+    source_bank: Mapped[str] = mapped_column(String(40), index=True)
+    manual_date: Mapped[datetime] = mapped_column(Date)
+    amount_eur: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+    values: Mapped[dict] = mapped_column(J)
+    bank_input: Mapped[dict] = mapped_column(J, default=dict)
+    match_confidence: Mapped[str] = mapped_column(String(20), default="")
+    linkage_status: Mapped[str] = mapped_column(String(20), default="not_in_dataset")
+    transaction_id: Mapped[str | None] = mapped_column(ForeignKey("transactions.id"), index=True)
+
+
 def make_engine(url: str | None = None):
     url = url or os.environ.get("DATABASE_URL", "")
     if not url:

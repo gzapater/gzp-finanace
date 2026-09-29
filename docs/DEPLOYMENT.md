@@ -78,6 +78,37 @@ Importa los extractos desde la web. Las transacciones y las confirmaciones resid
 solo en PostgreSQL. Las confirmaciones manuales no se sobrescriben al cambiar reglas
 o activar un modelo.
 
+## Histórico original y validación por banco
+
+El Excel etiquetado se conserva en `historical_records`, separado del libro bancario.
+No crea movimientos ni confirmaciones ni ejemplos de entrenamiento automáticamente.
+Los ejemplos para ML siguen pasando por `seed-history`, que acepta confianza Alta.
+
+Extrae la hoja de movimientos a un JSON privado con `filename`, `sheet` y `records`.
+Cada registro conserva `source_row` (fila original, contando la cabecera), `source_bank`,
+`manual_date` ISO, `amount_eur` decimal como texto (null si falta) y `values` con
+los campos `target_*`. Canonicaliza únicamente los alias de los tres bancos soportados;
+conserva los demás bancos como referencia. No cambies las etiquetas originales.
+Carga ese JSON y el CSV de cruce original fuera del contexto de Docker:
+
+```bash
+gzp-finance load-history-reference /RUTA_PRIVADA/history.json --dataset /RUTA_PRIVADA/dataset.csv
+```
+
+El vínculo usa identificadores bancarios/componentes cuando existen; en los demás
+casos requiere un único movimiento con el mismo banco, fecha bancaria, importe,
+concepto normalizado y cuenta si consta. Los cruces ambiguos quedan pendientes.
+Las siguientes importaciones vuelven a buscar referencias pendientes.
+La recarga del mismo JSON es idempotente y se rechaza mezclar otra versión del Excel.
+
+En Revisar, filtra por nuevos/sin etiqueta, vinculados al histórico o todos.
+Histórico Excel conserva las etiquetas y la confianza del cruce. Validación muestra
+recuentos, entradas, salidas y neto por banco; compara importes solo para vínculos
+uno a uno, con diferencias por fila, entradas, salidas y neto. Los fills agrupados,
+filas sin importe y referencias sin vínculo quedan fuera de esa comparación y se
+cuentan explícitamente. Una coincidencia parcial no valida el histórico completo.
+Estas sumas son movimientos, no saldos de cuenta.
+
 ## Histórico y baseline ML (batch explícito)
 
 ```bash

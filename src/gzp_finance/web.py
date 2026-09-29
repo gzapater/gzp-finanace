@@ -13,7 +13,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 
-from .db import Classification, Prediction, Rule, Transaction, make_engine, session_scope
+from .db import Classification, HistoricalRecord, Prediction, Rule, Transaction, make_engine, session_scope
+from .history import validation_summary
 from .domain import BANKS, SELECT_TARGETS, TARGET_LABELS, TARGETS, snapshot
 from .ml import active_bundle
 from .service import (accept_candidate, classify, confirm, import_statement,
@@ -111,11 +112,16 @@ def create_app(engine=None, *, username=None, password=None):
             return import_statement(s, bank, file.filename or "extracto", data, models=active_bundle(s))
 
     @app.get("/api/transactions", dependencies=[Depends(authenticate)])
-    def transactions(bank: str = "", status: str = "", offset: int = 0, limit: int = 50):
+    def transactions(bank: str = "", status: str = "", origin: str = "", offset: int = 0, limit: int = 50):
         if offset < 0 or not 1 <= limit <= 100:
             raise HTTPException(422, "Paginación inválida")
+        if origin not in {"", "historical", "new"}:
+            raise HTTPException(422, "Origen inválido")
         with session_scope(engine) as s:
+            has_history = select(HistoricalRecord.id).where(HistoricalRecord.transaction_id == Transaction.id).exists()
             query = select(Transaction, Classification).join(Classification, Classification.transaction_id == Transaction.id)
+            if origin:
+                query = query.where(has_history if origin == "historical" else ~has_history)
             if bank:
                 query = query.where(Transaction.source_bank == bank)
             if status == "pending":
@@ -124,12 +130,37 @@ def create_app(engine=None, *, username=None, password=None):
                 query = query.where(Classification.confirmed_by_user.is_(True))
             total = s.scalar(select(func.count()).select_from(query.subquery()))
             rows = s.execute(query.order_by(Transaction.bank_date.desc(), Transaction.id).offset(offset).limit(limit)).all()
+            historical_ids = set(s.scalars(select(HistoricalRecord.transaction_id).where(
+                HistoricalRecord.transaction_id.in_([tx.id for tx, c in rows]))))
             return {"total": total, "items": [{
                 "id": tx.id, "source_bank": tx.source_bank, "bank_date": str(tx.bank_date),
                 "concept_raw": tx.concept_raw, "amount_eur": str(tx.amount_eur),
                 "values": c.values, "provenance": c.provenance, "revision": c.revision,
                 "status": review_status(c), "confirmed": c.confirmed_by_user,
+                "origin": "historical" if tx.id in historical_ids else "new",
             } for tx, c in rows]}
+
+    @app.get("/api/history", dependencies=[Depends(authenticate)])
+    def history(bank: str = "", offset: int = 0, limit: int = 50):
+        if offset < 0 or not 1 <= limit <= 100:
+            raise HTTPException(422, "Paginación inválida")
+        with session_scope(engine) as s:
+            query = select(HistoricalRecord)
+            if bank:
+                query = query.where(HistoricalRecord.source_bank == bank)
+            total = s.scalar(select(func.count()).select_from(query.subquery()))
+            refs = s.scalars(query.order_by(HistoricalRecord.manual_date.desc(), HistoricalRecord.source_row)
+                .offset(offset).limit(limit))
+            return {"total": total, "items": [{"id": r.id, "source_bank": r.source_bank,
+                "date": str(r.manual_date), "amount_eur": str(r.amount_eur) if r.amount_eur is not None else None,
+                "values": r.values, "source_file": r.source_file, "source_sheet": r.source_sheet,
+                "source_row": r.source_row, "match_confidence": r.match_confidence,
+                "linkage_status": r.linkage_status, "transaction_id": r.transaction_id} for r in refs]}
+
+    @app.get("/api/validation", dependencies=[Depends(authenticate)])
+    def validation():
+        with session_scope(engine) as s:
+            return validation_summary(s)
 
     @app.get("/api/transactions/{transaction_id}", dependencies=[Depends(authenticate)])
     def detail(transaction_id: str):
@@ -139,7 +170,10 @@ def create_app(engine=None, *, username=None, password=None):
                 raise LookupError("Transacción no encontrada")
             c = s.scalar(select(Classification).where(Classification.transaction_id == tx.id))
             ps = list(s.scalars(select(Prediction).where(Prediction.transaction_id == tx.id).order_by(Prediction.created_at)))
+            historical = list(s.scalars(select(HistoricalRecord).where(HistoricalRecord.transaction_id == tx.id)))
             return {"transaction": snapshot(tx.context()), "values": c.values,
+                    "historical_labels": [{"values": r.values, "source_row": r.source_row,
+                                           "match_confidence": r.match_confidence} for r in historical],
                     "provenance": c.provenance, "revision": c.revision, "confirmed": c.confirmed_by_user,
                     "predictions": [{"engine": p.engine, "field": p.field, "value": p.predicted_value,
                                      "confidence": float(p.confidence), "accepted": p.accepted,

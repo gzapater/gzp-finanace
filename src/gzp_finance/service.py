@@ -102,6 +102,8 @@ def import_statement(session, bank: str, filename: str, data: bytes, *, models=N
         inserted += 1
     imp.counts = {**counts, "inserted": inserted, "duplicates": duplicates}
     session.flush()
+    from .history import link_history
+    link_history(session)
     return {"import_id": imp.id, "same_file": False, **imp.counts}
 
 

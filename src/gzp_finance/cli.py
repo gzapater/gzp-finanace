@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from .db import ModelVersion, Transaction, make_engine, session_scope
 from .ml import activate_model, active_bundle, train_batch
+from .history import load_reference
 from .service import classify, import_rules, import_statement, seed_history
 
 
@@ -20,6 +21,9 @@ def main():
     rules.add_argument("--source", choices=["learned", "user_confirmed", "structural"], required=True)
     history = sub.add_parser("seed-history")
     history.add_argument("path", type=Path)
+    reference = sub.add_parser("load-history-reference")
+    reference.add_argument("path", type=Path)
+    reference.add_argument("--dataset", type=Path, required=True)
     imp = sub.add_parser("import")
     imp.add_argument("bank")
     imp.add_argument("path", type=Path)
@@ -31,7 +35,9 @@ def main():
     sub.add_parser("reclassify")
     args = parser.parse_args()
     with session_scope(make_engine()) as session:
-        if args.command == "load-rules":
+        if args.command == "load-history-reference":
+            result = load_reference(session, args.path, args.dataset)
+        elif args.command == "load-rules":
             result = {"loaded": import_rules(session, args.path, args.source)}
         elif args.command == "seed-history":
             result = seed_history(session, args.path)

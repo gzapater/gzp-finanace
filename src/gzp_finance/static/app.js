@@ -2,6 +2,7 @@ const $ = (s) => document.querySelector(s);
 const csrf = $('meta[name="csrf-token"]').content;
 const euro = new Intl.NumberFormat('es-ES', {style: 'currency', currency: 'EUR'});
 let offset = 0, total = 0, selected = null;
+let historyOffset = 0, historyTotal = 0;
 let vocabulary = {fields: {}, subtypes: {}};
 const NEW_VALUE = '__finance_add_label__';
 
@@ -84,12 +85,13 @@ function notice(message, error = false) { $('#notice').textContent = message; $(
 function guarded(fn) { return async (...args) => { try { await fn(...args); } catch(e) { notice(e.message, true); } }; }
 
 async function loadTransactions() {
-  const params = new URLSearchParams({bank: $('#filter-bank').value, status: $('#filter-status').value, offset, limit: 50});
+  const params = new URLSearchParams({bank: $('#filter-bank').value, status: $('#filter-status').value, origin: $('#filter-origin').value, offset, limit: 50});
   const result = await api(`/api/transactions?${params}`); total = result.total;
   const tbody = $('#transactions'); tbody.replaceChildren();
   for (const tx of result.items) {
     const tr = node('tr'); const date = node('td');
     date.append(node('strong', new Date(tx.bank_date + 'T12:00:00').toLocaleDateString('es-ES')), node('small', tx.source_bank));
+    date.append(node('small', tx.origin === 'historical' ? 'Vinculado al Excel' : 'Sin etiqueta histórica'));
     const classification = node('td');
     for (const f of ['target_tipo_transaccion', 'target_categoria_general', 'target_subtipo']) {
       if (tx.values[f]) {
@@ -129,7 +131,7 @@ async function edit(id) {
   }
   filterSubtypes();
   form.elements.custom_match.value = JSON.stringify({source_bank: selected.transaction.source_bank, concept_key: selected.transaction.concept_key}, null, 2);
-  $('#evidence').textContent = JSON.stringify({bank: selected.transaction, predictions: selected.predictions}, null, 2);
+  $('#evidence').textContent = JSON.stringify({historical_labels: selected.historical_labels, bank: selected.transaction, predictions: selected.predictions}, null, 2);
   $('#editor').showModal();
 }
 $('#confirmation').onsubmit = async (event) => {
@@ -167,12 +169,51 @@ async function loadRules() {
   }
   if (!$('#candidates-list').childNodes.length) $('#candidates-list').append(node('p', 'No hay propuestas nuevas con suficiente repetición.', 'muted'));
 }
+async function loadHistory() {
+  const r = await api(`/api/history?${new URLSearchParams({bank: $('#history-bank').value, offset: historyOffset, limit: 50})}`);
+  historyTotal = r.total; $('#history-rows').replaceChildren();
+  const status = {matched:'Vinculado', ambiguous:'Cruce ambiguo', unmatched:'Sin movimiento encontrado', not_in_dataset:'Sin cruce previo'};
+  for (const h of r.items) {
+    const tr = node('tr'), date = node('td'), labels = node('td'), action = node('td');
+    date.append(node('strong', new Date(h.date + 'T12:00:00').toLocaleDateString('es-ES')), node('small', h.source_bank));
+    for (const [field, value] of Object.entries(h.values)) if (value) labels.append(node('div', `${field.replace('target_', '').replaceAll('_', ' ')}: ${value}`, 'classification'));
+    if (h.transaction_id) { const b = node('button', 'Revisar movimiento', 'secondary'); b.onclick = guarded(() => edit(h.transaction_id)); action.append(b); }
+    tr.append(date, node('td', `${h.source_sheet} · fila ${h.source_row}`), node('td', h.amount_eur === null ? 'Sin importe' : euro.format(h.amount_eur), 'amount'), labels, node('td', `${status[h.linkage_status]}${h.match_confidence ? ' · ' + h.match_confidence : ''}`), action);
+    $('#history-rows').append(tr);
+  }
+  $('#history-count').textContent = r.total ? `${historyOffset + 1}–${Math.min(historyOffset+50,r.total)} de ${r.total} filas` : '0 filas';
+  $('#history-previous').disabled = historyOffset === 0; $('#history-next').disabled = historyOffset+50 >= r.total;
+}
+async function loadValidation() {
+  const r = await api('/api/validation'); $('#validation-kpis').replaceChildren();
+  for (const [title,value] of [['Movimientos importados',r.imported_records],['Vinculados al histórico',r.historical_records],['Nuevos / sin etiqueta histórica',r.new_records],['Filas del Excel original',r.excel_records]]) {
+    const card = node('div',undefined,'card'); card.append(node('p',title,'hint'), node('strong',String(value))); $('#validation-kpis').append(card);
+  }
+  $('#bank-totals').replaceChildren(); $('#excel-comparison').replaceChildren();
+  for (const b of r.banks) {
+    const tr=node('tr');
+    for (const v of [b.bank,b.imported.count,b.historical.count,b.new.count,b.confirmed]) tr.append(node('td',String(v)));
+    for (const k of ['income','expenses','net']) tr.append(node('td',euro.format(b.imported[k]),'amount'));
+    $('#bank-totals').append(tr);
+    const c=b.comparison, row=node('tr');
+    for (const v of [b.bank,b.excel.count]) row.append(node('td',String(v)));
+    row.append(node('td',euro.format(b.excel.net),'amount'),node('td',String(c.excel.count)));
+    for (const v of [c.excel.net,c.bank.net,c.delta.net]) row.append(node('td',euro.format(v),'amount'));
+    const result=node('td'); result.append(node('strong', c.excel.count ? c.matches ? 'Coincide el subconjunto' : `${c.mismatched_rows} filas con diferencias` : 'Sin filas comparables'));
+    result.append(node('small', `${b.unlinked_rows} sin vincular · ${b.ambiguous_rows} ambiguas · ${b.grouped_rows} filas agrupadas · ${b.excel.missing_amount} sin importe`));
+    result.append(node('small', `Diferencia entradas ${euro.format(c.delta.income)} · salidas ${euro.format(c.delta.expenses)}`)); row.append(result); $('#excel-comparison').append(row);
+  }
+}
 for (const tab of document.querySelectorAll('.tab')) tab.onclick = guarded(async () => {
   for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== tab.dataset.panel;
   for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t === tab);
   if (tab.dataset.panel === 'review') await loadTransactions(); if (tab.dataset.panel === 'rules') await loadRules();
+  if (tab.dataset.panel === 'history') await loadHistory(); if (tab.dataset.panel === 'validation') await loadValidation();
 });
-for (const id of ['filter-bank', 'filter-status']) $('#' + id).onchange = guarded(async () => { offset = 0; await loadTransactions(); });
+for (const id of ['filter-bank', 'filter-status', 'filter-origin']) $('#' + id).onchange = guarded(async () => { offset = 0; await loadTransactions(); });
+$('#history-bank').onchange = guarded(async () => { historyOffset = 0; await loadHistory(); });
+$('#history-previous').onclick = guarded(async () => { historyOffset = Math.max(0,historyOffset-50); await loadHistory(); });
+$('#history-next').onclick = guarded(async () => { historyOffset += 50; await loadHistory(); });
 $('#previous').onclick = guarded(async () => { offset = Math.max(0, offset - 50); await loadTransactions(); });
 $('#next').onclick = guarded(async () => { offset += 50; await loadTransactions(); });
 guarded(loadTransactions)();
