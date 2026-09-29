@@ -31,6 +31,43 @@ for (const select of $('#fields').querySelectorAll('select')) select.onchange = 
   if (select.name === 'target_categoria_general') filterSubtypes();
 };
 
+const fold = value => value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase('es');
+for (const input of $('#fields').querySelectorAll('input[data-target]')) {
+  const list = $('#options-' + input.name);
+  let matches = [], active = -1;
+  const hide = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); };
+  const choose = index => { if (matches[index] !== undefined) { input.value = matches[index]; hide(); input.focus(); } };
+  const highlight = index => {
+    active = index;
+    for (const [i, option] of [...list.children].entries()) option.setAttribute('aria-selected', String(i === active));
+    input.setAttribute('aria-activedescendant', `${list.id}-${active}`);
+    list.children[active]?.scrollIntoView({block: 'nearest'});
+  };
+  const suggest = () => {
+    const query = fold(input.value.trim());
+    matches = query ? (vocabulary.fields[input.name] || []).filter(value => fold(value).includes(query) && value !== input.value).slice(0, 12) : [];
+    active = -1; list.replaceChildren(); input.removeAttribute('aria-activedescendant');
+    if (!matches.length) { hide(); return; }
+    for (const [index, value] of matches.entries()) {
+      const option = node('button', value); option.type = 'button'; option.id = `${list.id}-${index}`;
+      option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false'); option.tabIndex = -1;
+      option.onmousedown = e => e.preventDefault(); option.onclick = () => choose(index); list.append(option);
+    }
+    list.hidden = false; input.setAttribute('aria-expanded', 'true');
+  };
+  input.addEventListener('input', suggest);
+  input.addEventListener('focus', suggest);
+  input.addEventListener('blur', hide);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { if (!list.hidden) { e.preventDefault(); e.stopPropagation(); hide(); } }
+    else if (!list.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      highlight(active < 0 ? (e.key === 'ArrowDown' ? 0 : matches.length - 1) :
+        (active + (e.key === 'ArrowDown' ? 1 : -1) + matches.length) % matches.length);
+    } else if (!list.hidden && e.key === 'Enter') { e.preventDefault(); choose(active < 0 ? 0 : active); }
+  });
+}
+
 async function api(path, options = {}) {
   options.headers = {...options.headers, 'X-CSRF-Token': csrf};
   if (options.body && !(options.body instanceof FormData)) {
@@ -82,8 +119,8 @@ async function edit(id) {
       $(`[data-new-value="${input.name}"]`).hidden = true;
     } else {
       input.value = selected.values[input.name] || '';
-      const list = $('#options-' + input.name); list.replaceChildren();
-      for (const value of values) list.append(new Option(value, value));
+      const list = $('#options-' + input.name); list.replaceChildren(); list.hidden = true;
+      input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant');
     }
     const p = selected.provenance[input.name];
     const suggestions = selected.predictions.filter(x => x.field === input.name && x.engine === 'ml');

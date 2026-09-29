@@ -17,7 +17,7 @@ def test_auth_csrf_and_review_flow(engine):
     index = c.get("/")
     assert index.status_code == 200 and index.headers["cache-control"] == "no-store"
     assert index.text.count('<select id="target_') == 5
-    assert index.text.count('<datalist id="options-target_') == 3
+    assert index.text.count('class="suggestions" role="listbox"') == 3
     token = re.search(r'name="csrf-token" content="([^"]+)"', index.text)[1]
     assert c.post("/api/imports", data={"bank": "MyInvestor"}, files={"file": ("a.csv", MI)}).status_code == 403
     c.headers["x-csrf-token"] = token
