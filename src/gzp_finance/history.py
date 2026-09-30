@@ -3,15 +3,120 @@ from __future__ import annotations
 import csv
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
+from zipfile import BadZipFile
 
 from sqlalchemy import select
 
 from .db import Classification, HistoricalRecord, Transaction, TransactionComponent
 from .domain import BANKS, digest, validate_values
 from .rules import normalize_concept
+
+
+def workbook_payload(source: Path | BytesIO, *, source_name: str | None = None) -> dict:
+    """Read the user's original ledger, preserving its row numbers and labels."""
+    from openpyxl import load_workbook
+
+    sheet_name = "Transacciones cuentas"
+    source_name = source_name or Path(source).name
+    try:
+        workbook = load_workbook(source, read_only=True, data_only=True)
+    except (BadZipFile, OSError, ValueError):
+        raise ValueError("No se puede abrir el Excel histórico") from None
+    try:
+        if sheet_name not in workbook:
+            raise ValueError(f"Falta la hoja {sheet_name} en el Excel histórico")
+        sheet = workbook[sheet_name]
+        rows = sheet.iter_rows()
+        headers = [cell.value for cell in next(rows)]
+        if len(headers) < 13 or [headers[i] for i in (0, 3, 12)] != ["Fecha", "Banco", "Importe (€)"]:
+            raise ValueError("Las columnas del Excel histórico no son las esperadas")
+        aliases = {"01. La Caixa": "CaixaBank", "03. MyInvestor": "MyInvestor",
+                   "04. Trade Republic": "Trade Republic"}
+        targets = ("target_tipo_transaccion", "target_tipo_gasto", "target_fiscalidad",
+                   "target_categoria_general", "target_subtipo", "target_activo",
+                   "target_detalle", "target_detalle2")
+        records = []
+        for cells in rows:
+            values = [cell.value for cell in cells[:13]]
+            if not any(value is not None for value in values):
+                continue
+            source_row = cells[0].row
+            raw_date, bank, raw_amount = values[0], values[3], values[12]
+            if not raw_date or not isinstance(bank, str) or not bank.strip():
+                raise ValueError(f"Fila {source_row}: fecha o banco ausente")
+            if isinstance(raw_date, datetime):
+                manual_date = raw_date.date()
+            elif isinstance(raw_date, date):
+                manual_date = raw_date
+            elif isinstance(raw_date, str):
+                try:
+                    manual_date = datetime.strptime(raw_date.strip(), "%d/%m/%Y").date()
+                except ValueError:
+                    manual_date = date.fromisoformat(raw_date.strip())
+            else:
+                raise ValueError(f"Fila {source_row}: fecha inválida")
+            if raw_amount is None:
+                amount = None
+            else:
+                numeric = isinstance(raw_amount, (int, float, Decimal)) and not isinstance(raw_amount, bool)
+                raw = str(raw_amount).strip()
+                if "," in raw:
+                    raw = raw.replace(".", "").replace(",", ".")
+                try:
+                    amount = str(Decimal(raw).quantize(Decimal(".01")))
+                except Exception:
+                    raise ValueError(f"Fila {source_row}: importe inválido") from None
+            record = {"source_row": source_row, "source_bank": aliases.get(bank, bank),
+                      "manual_date": manual_date.isoformat(), "amount_eur": amount,
+                      "values": validate_values({target: str(values[4 + i]) if values[4 + i] is not None else ""
+                                                 for i, target in enumerate(targets)})}
+            if raw_amount is not None and not numeric:
+                record["excel_amount_is_numeric"] = False
+            records.append(record)
+        if not records:
+            raise ValueError("El Excel histórico no contiene movimientos")
+        return {"filename": source_name, "sheet": sheet_name, "records": records}
+    finally:
+        workbook.close()
+
+
+def load_workbook(session, source: Path | BytesIO, *, source_name: str | None = None) -> dict:
+    """Import or verify the complete original ledger without a bank crosswalk."""
+    payload = workbook_payload(source, source_name=source_name)
+    identity = {**payload, "records": [
+        {k: v for k, v in row.items() if k != "excel_amount_is_numeric"}
+        for row in payload["records"]]}
+    source_hash = digest(identity)
+    existing = {r.source_row: r for r in session.scalars(select(HistoricalRecord))}
+    expected_rows = {r["source_row"] for r in payload["records"]}
+    if set(existing) - expected_rows or any(r.source_hash != source_hash for r in existing.values()):
+        raise ValueError("La base contiene otra versión del histórico; revisa antes de mezclarla")
+    inserted = 0
+    for row in payload["records"]:
+        source_row = row["source_row"]
+        amount = Decimal(row["amount_eur"]) if row["amount_eur"] is not None else None
+        numeric = row.get("excel_amount_is_numeric", True)
+        old = existing.get(source_row)
+        if old:
+            if (old.source_file != payload["filename"] or old.source_sheet != payload["sheet"]
+                    or old.source_bank != row["source_bank"] or old.manual_date != date.fromisoformat(row["manual_date"])
+                    or old.amount_eur != amount or old.values != row["values"]
+                    or old.excel_amount_is_numeric != numeric):
+                raise ValueError(f"Fila {source_row}: la base difiere del Excel original")
+            continue
+        session.add(HistoricalRecord(source_hash=source_hash, source_file=payload["filename"],
+            source_sheet=payload["sheet"], source_row=source_row, source_bank=row["source_bank"],
+            manual_date=date.fromisoformat(row["manual_date"]), amount_eur=amount,
+            excel_amount_is_numeric=numeric, values=row["values"], bank_input={}))
+        inserted += 1
+    session.flush()
+    summary = validation_summary(session)
+    return {"inserted": inserted, "verified": len(payload["records"]),
+            "total": summary["excel_total"], "banks": summary["excel_banks"]}
 
 
 def load_reference(session, path: Path, dataset: Path) -> dict:

@@ -11,6 +11,10 @@ statements and overlapping transactions, applies field-level deterministic rules
 and offers an authenticated review UI. User confirmations retain immutable audit
 snapshots and optionally become training examples or explicitly confirmed rules.
 The original rules' match/set contract and precedence are preserved.
+The original `MisFinanzasMovimientos202604.xlsx` workbook is imported directly as
+the canonical historical ledger. Its rows and per-bank totals are separate from
+bank-statement transactions, which are staged for review rather than added again
+to the historical net.
 
 ```bash
 python3.12 -m venv .venv

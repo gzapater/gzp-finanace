@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,7 +16,7 @@ from sqlalchemy import func, select, text
 from starlette.concurrency import run_in_threadpool
 
 from .db import Classification, HistoricalRecord, Prediction, Rule, Transaction, make_engine, session_scope
-from .history import validation_summary
+from .history import load_workbook, totals, validation_summary
 from .domain import BANKS, SELECT_TARGETS, TARGET_LABELS, TARGETS, snapshot
 from .ml import active_bundle
 from .service import (accept_candidate, classify, confirm, import_statement,
@@ -94,9 +95,16 @@ def create_app(engine=None, *, username=None, password=None):
 
     @app.get("/", dependencies=[Depends(authenticate)])
     def index(request: Request):
+        with session_scope(engine) as s:
+            history_banks = sorted(set(s.scalars(select(HistoricalRecord.source_bank))))
+        display_names = {"CaixaBank": "01. La Caixa", "MyInvestor": "03. MyInvestor",
+                         "Trade Republic": "04. Trade Republic"}
+        history_banks = sorted(((bank, display_names.get(bank, bank)) for bank in history_banks),
+                               key=lambda item: item[1])
         return templates.TemplateResponse(request=request, name="index.html", context={
             "csrf": csrf, "banks": BANKS, "targets": TARGETS,
-            "select_targets": SELECT_TARGETS, "target_labels": TARGET_LABELS})
+            "select_targets": SELECT_TARGETS, "target_labels": TARGET_LABELS,
+            "history_banks": history_banks})
 
     @app.get("/api/vocabulary", dependencies=[Depends(authenticate)])
     def existing_labels():
@@ -152,13 +160,28 @@ def create_app(engine=None, *, username=None, password=None):
             if bank:
                 query = query.where(HistoricalRecord.source_bank == bank)
             total = s.scalar(select(func.count()).select_from(query.subquery()))
+            all_refs = list(s.scalars(query))
+            amounts = totals(r.amount_eur if r.excel_amount_is_numeric else None for r in all_refs)
             refs = s.scalars(query.order_by(HistoricalRecord.manual_date.desc(), HistoricalRecord.source_row)
                 .offset(offset).limit(limit))
-            return {"total": total, "items": [{"id": r.id, "source_bank": r.source_bank,
+            return {"total": total, "totals": amounts, "items": [{"id": r.id, "source_bank": r.source_bank,
                 "date": str(r.manual_date), "amount_eur": str(r.amount_eur) if r.amount_eur is not None else None,
                 "values": r.values, "source_file": r.source_file, "source_sheet": r.source_sheet,
                 "source_row": r.source_row, "match_confidence": r.match_confidence,
                 "linkage_status": r.linkage_status, "transaction_id": r.transaction_id} for r in refs]}
+
+    @app.post("/api/history/import", dependencies=[Depends(authenticate)])
+    async def upload_history(file: UploadFile = File(...)):
+        if not file.filename or not file.filename.lower().endswith(".xlsx"):
+            raise HTTPException(422, "Selecciona el Excel histórico .xlsx")
+        data = await file.read(10 * 1024 * 1024 + 1)
+        await file.close()
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(413, "Máximo 10 MB por Excel")
+        def process():
+            with session_scope(engine) as s:
+                return load_workbook(s, BytesIO(data), source_name=Path(file.filename).name)
+        return await run_in_threadpool(process)
 
     @app.get("/api/validation", dependencies=[Depends(authenticate)])
     def validation():

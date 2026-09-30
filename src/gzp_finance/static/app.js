@@ -172,21 +172,31 @@ async function loadRules() {
 async function loadHistory() {
   const r = await api(`/api/history?${new URLSearchParams({bank: $('#history-bank').value, offset: historyOffset, limit: 50})}`);
   historyTotal = r.total; $('#history-rows').replaceChildren();
-  const status = {matched:'Vinculado', ambiguous:'Cruce ambiguo', unmatched:'Sin movimiento encontrado', not_in_dataset:'Sin cruce previo'};
+  $('#history-summary').textContent = `${r.totals.count} movimientos históricos · Neto ${euro.format(r.totals.net)}${r.totals.missing_amount ? ` · ${r.totals.missing_amount} importes no numéricos` : ''}`;
   for (const h of r.items) {
-    const tr = node('tr'), date = node('td'), labels = node('td'), action = node('td');
+    const tr = node('tr'), date = node('td'), labels = node('td');
     date.append(node('strong', new Date(h.date + 'T12:00:00').toLocaleDateString('es-ES')), node('small', h.source_bank));
     for (const [field, value] of Object.entries(h.values)) if (value) labels.append(node('div', `${field.replace('target_', '').replaceAll('_', ' ')}: ${value}`, 'classification'));
-    if (h.transaction_id) { const b = node('button', 'Revisar movimiento', 'secondary'); b.onclick = guarded(() => edit(h.transaction_id)); action.append(b); }
-    tr.append(date, node('td', `${h.source_sheet} · fila ${h.source_row}`), node('td', h.amount_eur === null ? 'Sin importe' : euro.format(h.amount_eur), 'amount'), labels, node('td', `${status[h.linkage_status]}${h.match_confidence ? ' · ' + h.match_confidence : ''}`), action);
+    tr.append(date, node('td', `${h.source_sheet} · fila ${h.source_row}`), node('td', h.amount_eur === null ? 'Sin importe' : euro.format(h.amount_eur), 'amount'), labels);
     $('#history-rows').append(tr);
   }
   $('#history-count').textContent = r.total ? `${historyOffset + 1}–${Math.min(historyOffset+50,r.total)} de ${r.total} filas` : '0 filas';
   $('#history-previous').disabled = historyOffset === 0; $('#history-next').disabled = historyOffset+50 >= r.total;
 }
+$('#history-upload').onsubmit = guarded(async (event) => {
+  event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true;
+  try {
+    const r = await api('/api/history/import', {method: 'POST', body: new FormData(event.currentTarget)});
+    const caixa = r.banks.find(b => b.bank === '01. La Caixa');
+    $('#history-import-result').hidden = false;
+    $('#history-import-result').textContent = `${r.verified} filas verificadas · ${r.inserted} nuevas\nCaixa: ${caixa ? euro.format(caixa.totals.net) : 'sin filas'}\nNeto histórico total: ${euro.format(r.total.net)}`;
+    notice('Histórico original importado y verificado.'); historyOffset = 0;
+    await loadHistory();
+  } finally { button.disabled = false; }
+});
 async function loadValidation() {
   const r = await api('/api/validation'); $('#validation-kpis').replaceChildren();
-  for (const [title,value] of [['Movimientos importados',r.imported_records],['Vinculados al histórico',r.historical_records],['Nuevos / sin etiqueta histórica',r.new_records],['Filas del Excel original',r.excel_records]]) {
+  for (const [title,value] of [['Filas del histórico',r.excel_records],['Neto histórico',euro.format(r.excel_total.net)],['Bancos del histórico',r.excel_banks.length]]) {
     const card = node('div',undefined,'card'); card.append(node('p',title,'hint'), node('strong',String(value))); $('#validation-kpis').append(card);
   }
   $('#excel-bank-totals').replaceChildren();
@@ -196,22 +206,6 @@ async function loadValidation() {
   }
   $('#excel-total-count').textContent=String(r.excel_total.count);
   $('#excel-total-net').textContent=euro.format(r.excel_total.net);
-  $('#bank-totals').replaceChildren(); $('#excel-comparison').replaceChildren();
-  for (const b of r.banks) {
-    const tr=node('tr');
-    for (const v of [b.bank,b.imported.count,b.historical.count,b.new.count,b.confirmed]) tr.append(node('td',String(v)));
-    for (const k of ['income','expenses','net']) tr.append(node('td',euro.format(b.imported[k]),'amount'));
-    $('#bank-totals').append(tr);
-    const c=b.comparison, row=node('tr');
-    for (const v of [b.bank,b.excel.count]) row.append(node('td',String(v)));
-    row.append(node('td',euro.format(b.excel.net),'amount'),node('td',String(c.excel.count)));
-    for (const v of [c.excel.net,c.bank.net,c.delta.net]) row.append(node('td',euro.format(v),'amount'));
-    const result=node('td'); result.append(node('strong', c.excel.count ? c.matches ? `${c.excel.count} filas comparadas sin diferencia` : `${c.mismatched_rows} filas con diferencias` : 'Sin filas comparables'));
-    result.append(node('small', `${b.unlinked_rows} sin vincular · ${b.ambiguous_rows} ambiguas · ${b.grouped_rows} filas agrupadas · ${b.excel.missing_amount} sin importe`));
-    if (b.imported_dates.first && b.excel_dates.first) result.append(node('small', `Extracto bancario: ${b.imported_dates.first} a ${b.imported_dates.last} · Excel: ${b.excel_dates.first} a ${b.excel_dates.last}`));
-    result.append(node('small', `Fuera de comparación: ${b.outside_comparison.count} filas · ${euro.format(b.outside_comparison.net)} netos${b.text_amount_rows ? ` · ${b.text_amount_rows} importes escritos como texto` : ''}`));
-    result.append(node('small', `Diferencia entradas ${euro.format(c.delta.income)} · salidas ${euro.format(c.delta.expenses)}`)); row.append(result); $('#excel-comparison').append(row);
-  }
 }
 for (const tab of document.querySelectorAll('.tab')) tab.onclick = guarded(async () => {
   for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== tab.dataset.panel;
@@ -225,4 +219,4 @@ $('#history-previous').onclick = guarded(async () => { historyOffset = Math.max(
 $('#history-next').onclick = guarded(async () => { historyOffset += 50; await loadHistory(); });
 $('#previous').onclick = guarded(async () => { offset = Math.max(0, offset - 50); await loadTransactions(); });
 $('#next').onclick = guarded(async () => { offset += 50; await loadTransactions(); });
-guarded(loadTransactions)();
+guarded(loadHistory)();

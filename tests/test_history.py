@@ -1,12 +1,15 @@
 import csv
 import json
+import re
 from datetime import date
 from decimal import Decimal
 
+import pytest
+from openpyxl import Workbook
 from sqlalchemy import func, select
 
 from gzp_finance.db import Classification, HistoricalRecord, TrainingExample, Transaction
-from gzp_finance.history import link_history, load_reference, validation_summary
+from gzp_finance.history import link_history, load_reference, load_workbook, validation_summary
 from gzp_finance.service import import_statement
 from test_importers import MI, TR
 from test_web import client
@@ -23,6 +26,53 @@ def reference(tmp_path, *, amount='-1299.87', confidence='Alta'):
         w.writeheader(); w.writerow({'source_bank':'MyInvestor','source_row':2,'bank_date':'2026-04-01',
             'concept_raw':'Fondo ejemplo','amount_eur':'-1299.87','match_confidence':confidence})
     return p,d
+
+
+def original_workbook(tmp_path):
+    path=tmp_path/'original.xlsx'
+    workbook=Workbook();sheet=workbook.active;sheet.title='Transacciones cuentas'
+    sheet.append(['Fecha','mes','Año','Banco','Tipo transacción','Tipo de gasto','Fiscalidad',
+                  'Categoria General','Subtipo','Activo','Detalle','Detalle 2','Importe (€)'])
+    sheet.append([date(2026,4,1),4,2026,'01. La Caixa','Ingreso','','','Ingresos','Nómina',
+                  'Trabajo','','',32.40])
+    sheet.append(['02/04/2026',4,2026,'03. MyInvestor','Inversión','','','Inversión','Fondo',
+                  'Activo','','','0,02'])
+    workbook.save(path)
+    return path
+
+
+def test_original_workbook_is_canonical_ledger_and_reimport_is_checked(session,tmp_path):
+    path=original_workbook(tmp_path)
+    first=load_workbook(session,path)
+    assert first['inserted']==2 and first['verified']==2
+    assert first['total']['net']=='32.40'
+    assert [(b['bank'],b['totals']['net']) for b in first['banks']] == [
+        ('01. La Caixa','32.40'),('03. MyInvestor','0.00')]
+    assert load_workbook(session,path)['inserted']==0
+    assert session.scalar(select(func.count()).select_from(HistoricalRecord))==2
+    assert session.scalar(select(func.count()).select_from(Transaction))==0
+    assert session.scalar(select(func.count()).select_from(TrainingExample))==0
+    from openpyxl import load_workbook as open_workbook
+    changed=open_workbook(path);changed.active['M2']=33.40;changed.save(path)
+    with pytest.raises(ValueError,match='otra versión'):
+        load_workbook(session,path)
+    assert validation_summary(session)['excel_total']['net']=='32.40'
+
+
+def test_original_workbook_upload_shows_filtered_ledger_total(engine,tmp_path):
+    path=original_workbook(tmp_path)
+    c=client(engine);c.auth=('test','synthetic-test-password')
+    html=c.get('/').text
+    token=re.search(r'name="csrf-token" content="([^"]+)"',html)[1]
+    c.headers['x-csrf-token']=token
+    with path.open('rb') as file:
+        uploaded=c.post('/api/history/import',files={'file':('original.xlsx',file)})
+    assert uploaded.status_code==200 and uploaded.json()['verified']==2
+    assert uploaded.json()['total']['net']=='32.40'
+    assert c.get('/api/history?bank=CaixaBank').json()['totals']['net']=='32.40'
+    assert c.get('/api/history?bank=MyInvestor').json()['totals']['net']=='0.00'
+    assert c.get('/api/validation').json()['excel_total']['net']=='32.40'
+    assert '01. La Caixa' in c.get('/').text
 
 
 def test_reference_before_import_links_later_and_never_confirms_or_trains(session,tmp_path):

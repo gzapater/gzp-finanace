@@ -80,40 +80,27 @@ o activar un modelo.
 
 ## Histórico original y validación por banco
 
-El Excel etiquetado se conserva en `historical_records`, separado del libro bancario.
-No crea movimientos ni confirmaciones ni ejemplos de entrenamiento automáticamente.
-Los ejemplos para ML siguen pasando por `seed-history`, que acepta confianza Alta.
-
-Extrae la hoja de movimientos a un JSON privado con `filename`, `sheet` y `records`.
-Cada registro conserva `source_row` (fila original, contando la cabecera), `source_bank`,
-`manual_date` ISO, `amount_eur` decimal como texto (null si falta) y `values` con
-los campos `target_*`. Canonicaliza únicamente los alias de los tres bancos soportados;
-conserva los demás bancos como referencia. No cambies las etiquetas originales.
-Si una celda de «Importe (€)» contiene texto que parece un número, conserva su
-importe para el cruce y añade `"excel_amount_is_numeric": false` a esa fila del JSON.
-Así el neto del Excel reproduce la tabla dinámica, que omite las celdas de texto.
-Ese metadato se puede añadir después de la primera carga sin duplicar el histórico:
-recarga el mismo JSON enriquecido para actualizar la referencia.
-Carga ese JSON y el CSV de cruce original fuera del contexto de Docker:
+Importa directamente `MisFinanzasMovimientos202604.xlsx`, hoja `Transacciones cuentas`,
+desde la pestaña Histórico importado o la CLI:
 
 ```bash
-gzp-finance load-history-reference /RUTA_PRIVADA/history.json --dataset /RUTA_PRIVADA/dataset.csv
+gzp-finance load-history-workbook /RUTA_PRIVADA/MisFinanzasMovimientos202604.xlsx
 ```
 
-El vínculo usa identificadores bancarios/componentes cuando existen; en los demás
-casos requiere un único movimiento con el mismo banco, fecha bancaria, importe,
-concepto normalizado y cuenta si consta. Los cruces ambiguos quedan pendientes.
-Las siguientes importaciones vuelven a buscar referencias pendientes.
-La recarga del mismo JSON es idempotente y se rechaza mezclar otra versión del Excel.
+Las filas del Excel son el histórico contable canónico en `historical_records`, con
+importe, fecha, banco, etiqueta y número de fila originales. Se suman una sola vez,
+separadas de los extractos bancarios de `transactions`. Reimportar el mismo archivo
+verifica todas las filas sin duplicarlas; si alguna difiere de la base, se detiene
+para revisar la nueva versión. No se necesita el fichero de cruce ni el dataset de
+reglas para este paso. Las celdas de importe que parecen números pero son texto se
+conservan en el detalle y se omiten de la suma, como en la tabla dinámica de Excel.
 
-En Revisar, filtra por nuevos/sin etiqueta, vinculados al histórico o todos.
-Histórico Excel conserva las etiquetas y la confianza del cruce. Validación muestra
-el neto de los doce bancos del Excel y su total, además de recuentos, entradas,
-salidas y neto de los tres bancos importados; compara importes solo para vínculos
-uno a uno, con diferencias por fila, entradas, salidas y neto. Los fills agrupados,
-filas sin importe numérico y referencias sin vínculo quedan fuera de esa comparación y se
-cuentan explícitamente. Una coincidencia parcial no valida el histórico completo.
-Estas sumas son movimientos, no saldos de cuenta.
+La pestaña Validación suma solo este histórico por banco. Revisar extractos muestra
+los movimientos bancarios aparte, para clasificar los nuevos. Una vinculación entre
+ambos es evidencia adicional: no crea otro apunte en el histórico. La importación
+del Excel no confirma clasificaciones bancarias ni reentrena un modelo por sí sola.
+El antiguo comando `load-history-reference` queda disponible para recuperar cruces
+anteriores, pero no forma parte de la importación ni de los KPIs del histórico.
 
 ## Histórico y baseline ML (batch explícito)
 

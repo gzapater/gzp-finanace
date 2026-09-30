@@ -152,7 +152,7 @@ class ModelVersion(Base):
 
 
 class HistoricalRecord(Base):
-    """Original Excel labels are a reference, never a second cash movement."""
+    """Canonical Excel ledger row; a bank link adds evidence, never another ledger row."""
     __tablename__ = "historical_records"
     __table_args__ = (UniqueConstraint("source_hash", "source_row"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
