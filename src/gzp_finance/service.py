@@ -9,7 +9,7 @@ from sqlalchemy import select, text, update
 
 from .db import (Classification, HistoricalRecord, Import, ModelVersion, Prediction, Rule,
                  TrainingExample, Transaction, TransactionComponent, now, uid)
-from .domain import (MAIN_TARGETS, TARGETS, digest, snapshot,
+from .domain import (MAIN_TARGETS, TARGETS, digest, month_bounds, snapshot,
                      validate_match, validate_values)
 from .importers import parse_statement
 from .rules import apply_rules, load_rules, transaction_context
@@ -56,9 +56,17 @@ def classify(session, tx: Transaction, *, models=None) -> Classification:
     return current
 
 
-def import_statement(session, bank: str, filename: str, data: bytes, *, models=None) -> dict:
+def import_statement(session, bank: str, filename: str, data: bytes, *, models=None,
+                     month: str = "") -> dict:
     transactions, counts = parse_statement(bank, data)
-    file_hash = hashlib.sha256(data).hexdigest()
+    if month:
+        start, end = month_bounds(month)
+        transactions = [tx for tx in transactions if start <= tx["bank_date"] < end]
+        if not transactions:
+            raise ValueError(f"El extracto no contiene movimientos de {month}")
+        counts = {**counts, "month": month, "selected_rows": len(transactions)}
+    # One full bank export can be imported month by month without a same-file collision.
+    file_hash = hashlib.sha256(data + (b"\0month:" + month.encode() if month else b"")).hexdigest()
     lock_import(session, bank)
     existing = session.scalar(select(Import).where(Import.source_bank == bank, Import.file_hash == file_hash))
     if existing:
@@ -68,6 +76,7 @@ def import_statement(session, bank: str, filename: str, data: bytes, *, models=N
     session.add(imp)
     session.flush()
     inserted, duplicates = 0, 0
+    complete_proposals, with_rules, with_ml = 0, 0, 0
     for tx in transactions:
         # Grouped fills keep every underlying bank ID to detect partial overlaps.
         rows = tx["raw_payload"].get("rows", [])
@@ -98,9 +107,14 @@ def import_statement(session, bank: str, filename: str, data: bytes, *, models=N
         for external_id in ids:
             session.add(TransactionComponent(transaction_id=record.id, source_bank=bank,
                                               account_ref=tx.get("account_ref", ""), external_id=external_id))
-        classify(session, record, models=models)
+        classification = classify(session, record, models=models)
+        complete_proposals += all(classification.values.get(field) for field in MAIN_TARGETS)
+        with_rules += any(source.get("engine") == "rule" for source in classification.provenance.values())
+        with_ml += any(source.get("engine") == "ml" for source in classification.provenance.values())
         inserted += 1
-    imp.counts = {**counts, "inserted": inserted, "duplicates": duplicates}
+    imp.counts = {**counts, "inserted": inserted, "duplicates": duplicates,
+                  "complete_proposals": complete_proposals, "with_rules": with_rules,
+                  "with_ml": with_ml}
     session.flush()
     from .history import link_history
     link_history(session)

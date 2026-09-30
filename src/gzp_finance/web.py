@@ -15,9 +15,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from starlette.concurrency import run_in_threadpool
 
-from .db import Classification, HistoricalRecord, Prediction, Rule, Transaction, make_engine, session_scope
+from .db import Classification, HistoricalRecord, Import, Prediction, Rule, Transaction, make_engine, session_scope
 from .history import load_workbook, totals, validation_summary
-from .domain import BANKS, SELECT_TARGETS, TARGET_LABELS, TARGETS, snapshot
+from .domain import BANKS, MAIN_TARGETS, SELECT_TARGETS, TARGET_LABELS, TARGETS, month_bounds, snapshot
 from .ml import active_bundle
 from .service import (accept_candidate, classify, confirm, import_statement,
                       review_status, rule_candidates, vocabulary)
@@ -112,18 +112,20 @@ def create_app(engine=None, *, username=None, password=None):
             return vocabulary(s)
 
     @app.post("/api/imports", dependencies=[Depends(authenticate)])
-    async def upload(bank: str = Form(...), file: UploadFile = File(...)):
+    async def upload(bank: str = Form(...), month: str = Form(""), file: UploadFile = File(...)):
         data = await file.read(10 * 1024 * 1024 + 1)
         await file.close()
         if len(data) > 10 * 1024 * 1024:
             raise HTTPException(413, "Máximo 10 MB por extracto")
         def process():
             with session_scope(engine) as s:
-                return import_statement(s, bank, file.filename or "extracto", data, models=active_bundle(s))
+                return import_statement(s, bank, file.filename or "extracto", data,
+                                        models=active_bundle(s), month=month)
         return await run_in_threadpool(process)
 
     @app.get("/api/transactions", dependencies=[Depends(authenticate)])
-    def transactions(bank: str = "", status: str = "", origin: str = "", offset: int = 0, limit: int = 50):
+    def transactions(bank: str = "", status: str = "", origin: str = "", month: str = "",
+                     offset: int = 0, limit: int = 50):
         if offset < 0 or not 1 <= limit <= 100:
             raise HTTPException(422, "Paginación inválida")
         if origin not in {"", "historical", "new"}:
@@ -135,6 +137,9 @@ def create_app(engine=None, *, username=None, password=None):
                 query = query.where(has_history if origin == "historical" else ~has_history)
             if bank:
                 query = query.where(Transaction.source_bank == bank)
+            if month:
+                start, end = month_bounds(month)
+                query = query.where(Transaction.bank_date >= start, Transaction.bank_date < end)
             if status == "pending":
                 query = query.where(Classification.confirmed_by_user.is_(False))
             elif status == "confirmed":
@@ -150,6 +155,35 @@ def create_app(engine=None, *, username=None, password=None):
                 "status": review_status(c), "confirmed": c.confirmed_by_user,
                 "origin": "historical" if tx.id in historical_ids else "new",
             } for tx, c in rows]}
+
+    @app.get("/api/monthly-progress", dependencies=[Depends(authenticate)])
+    def monthly_progress(month: str):
+        start, end = month_bounds(month)
+        with session_scope(engine) as s:
+            progress = {bank: {"bank": bank, "imported": 0, "confirmed": 0,
+                               "complete_now": 0, "complete_at_import": 0,
+                               "with_rules_at_import": 0, "with_ml_at_import": 0} for bank in BANKS}
+            rows = s.execute(select(Transaction, Classification).join(
+                Classification, Classification.transaction_id == Transaction.id).where(
+                    Transaction.bank_date >= start, Transaction.bank_date < end)).all()
+            for tx, classification in rows:
+                row = progress[tx.source_bank]
+                row["imported"] += 1
+                row["confirmed"] += bool(classification.confirmed_by_user)
+                row["complete_now"] += bool(not classification.confirmed_by_user and all(
+                    classification.values.get(field) for field in MAIN_TARGETS))
+            for imp in s.scalars(select(Import)):
+                if imp.counts.get("month") != month:
+                    continue
+                row = progress[imp.source_bank]
+                for key in ("complete_proposals", "with_rules", "with_ml"):
+                    destination = {"complete_proposals": "complete_at_import",
+                                   "with_rules": "with_rules_at_import",
+                                   "with_ml": "with_ml_at_import"}[key]
+                    row[destination] += int(imp.counts.get(key, 0))
+            banks = list(progress.values())
+            return {"month": month, "banks": banks, "total": {
+                key: sum(bank[key] for bank in banks) for key in banks[0] if key != "bank"}}
 
     @app.get("/api/history", dependencies=[Depends(authenticate)])
     def history(bank: str = "", offset: int = 0, limit: int = 50):

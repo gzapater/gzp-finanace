@@ -78,6 +78,25 @@ Importa los extractos desde la web. Las transacciones y las confirmaciones resid
 solo en PostgreSQL. Las confirmaciones manuales no se sobrescriben al cambiar reglas
 o activar un modelo.
 
+## Prueba secuencial de extractos desde mayo de 2026
+
+En «Importar», selecciona el mes antes de subir cada extracto. Puedes reutilizar
+los mismos tres archivos completos para mayo, junio y los meses posteriores: la
+app procesa y guarda únicamente las operaciones del mes elegido. Importar de nuevo
+el mismo archivo y mes no duplica movimientos; otro mes del mismo archivo se trata
+como una importación independiente. En «Revisar extractos», el filtro de mes y los
+KPIs muestran cuántas propuestas estaban completas al importar y cuántos
+movimientos llevaban alguna regla o predicción ML aceptada. Las cifras de reglas
+y ML pueden solaparse. Las confirmaciones se cuentan aparte.
+
+Después de cargar los tres bancos de mayo, revisa las propuestas y confirma los
+casos correctos o corregidos. Convierte en regla solo un patrón estable; las
+reglas confirmadas se aplican a junio cuando lo importes. Repite mes a mes para
+comparar las propuestas iniciales antes de corregir. El histórico contable
+original y sus KPIs permanecen separados. Mayo-septiembre de 2026 son prueba
+progresiva: las etiquetas de esos meses no entran en el entrenamiento ML de esta
+V0 aunque se conserven como correcciones auditables.
+
 ## Histórico original y validación por banco
 
 Importa directamente `MisFinanzasMovimientos202604.xlsx`, hoja `Transacciones cuentas`,

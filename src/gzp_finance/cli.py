@@ -29,6 +29,7 @@ def main():
     imp = sub.add_parser("import")
     imp.add_argument("bank")
     imp.add_argument("path", type=Path)
+    imp.add_argument("--month", default="", help="Importa únicamente AAAA-MM del extracto completo")
     train = sub.add_parser("train")
     train.add_argument("--output", type=Path, default=Path("data/private/models"))
     activate = sub.add_parser("activate-model")
@@ -46,7 +47,8 @@ def main():
         elif args.command == "seed-history":
             result = seed_history(session, args.path)
         elif args.command == "import":
-            result = import_statement(session, args.bank, args.path.name, args.path.read_bytes(), models=active_bundle(session))
+            result = import_statement(session, args.bank, args.path.name, args.path.read_bytes(),
+                                      models=active_bundle(session), month=args.month)
         elif args.command == "train":
             model = train_batch(session, args.output)
             result = {"version": model.id, "metrics": model.metrics, "active": False}

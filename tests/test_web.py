@@ -42,6 +42,43 @@ def test_invalid_import_is_atomic(engine):
     assert c.get("/api/transactions").json()["total"] == 0
 
 
+def test_monthly_reimport_applies_may_rule_to_june_without_loading_later_rows(engine):
+    statement = ("Fecha de operación;Fecha de valor;Concepto;Importe;Divisa\n"
+                 "03/05/2026;03/05/2026;Cuota ejemplo;-10,00;EUR\n"
+                 "03/06/2026;03/06/2026;Cuota ejemplo;-20,00;EUR\n")
+    c = client(engine); c.auth = ("test", "synthetic-test-password")
+    token = re.search(r'name="csrf-token" content="([^"]+)"', c.get("/").text)[1]
+    c.headers["x-csrf-token"] = token
+
+    def upload(month):
+        return c.post("/api/imports", data={"bank": "MyInvestor", "month": month},
+                      files={"file": ("full.csv", statement)})
+
+    may = upload("2026-05")
+    assert may.status_code == 200 and may.json()["inserted"] == 1
+    assert may.json()["selected_rows"] == 1
+    assert c.get("/api/transactions?month=2026-06").json()["total"] == 0
+    may_tx = c.get("/api/transactions?month=2026-05").json()["items"][0]
+    confirmation = c.post(f"/api/transactions/{may_tx['id']}/confirm", json={
+        "values": {"target_tipo_transaccion": "Gasto", "target_categoria_general": "Hogar",
+                   "target_subtipo": "Cuota"}, "revision": may_tx["revision"],
+        "training": False, "rule_mode": "concept"})
+    assert confirmation.status_code == 200
+
+    june = upload("2026-06")
+    assert june.status_code == 200 and june.json()["inserted"] == 1
+    assert june.json()["complete_proposals"] == 1
+    assert june.json()["with_rules"] == 1
+    assert upload("2026-05").json()["same_file"] is True
+    assert c.get("/api/transactions?month=2026-05").json()["total"] == 1
+    assert c.get("/api/transactions?month=2026-06").json()["total"] == 1
+    may_progress = c.get("/api/monthly-progress?month=2026-05").json()["total"]
+    june_progress = c.get("/api/monthly-progress?month=2026-06").json()["total"]
+    assert (may_progress["imported"], may_progress["confirmed"]) == (1, 1)
+    assert (june_progress["imported"], june_progress["complete_at_import"]) == (1, 1)
+    assert c.get("/api/transactions?month=2026-13").status_code == 422
+
+
 def test_large_import_keeps_other_requests_responsive(engine, monkeypatch):
     import asyncio
     import threading

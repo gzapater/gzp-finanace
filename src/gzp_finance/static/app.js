@@ -5,6 +5,10 @@ let offset = 0, total = 0, selected = null;
 let historyOffset = 0, historyTotal = 0;
 let vocabulary = {fields: {}, subtypes: {}};
 const NEW_VALUE = '__finance_add_label__';
+let reviewMonth = '2026-05';
+try { reviewMonth = localStorage.getItem('gzp-finance-review-month') || reviewMonth; } catch (_) {}
+$('#filter-month').value = reviewMonth;
+$('#import-month').value = reviewMonth;
 
 function selectOptions(field, values, current = '') {
   const select = $(`[data-target="${field}"]`);
@@ -85,7 +89,8 @@ function notice(message, error = false) { $('#notice').textContent = message; $(
 function guarded(fn) { return async (...args) => { try { await fn(...args); } catch(e) { notice(e.message, true); } }; }
 
 async function loadTransactions() {
-  const params = new URLSearchParams({bank: $('#filter-bank').value, status: $('#filter-status').value, origin: $('#filter-origin').value, offset, limit: 50});
+  const month = $('#filter-month').value;
+  const params = new URLSearchParams({bank: $('#filter-bank').value, status: $('#filter-status').value, origin: $('#filter-origin').value, month, offset, limit: 50});
   const result = await api(`/api/transactions?${params}`); total = result.total;
   const tbody = $('#transactions'); tbody.replaceChildren();
   for (const tx of result.items) {
@@ -108,12 +113,34 @@ async function loadTransactions() {
   if (!result.items.length) { const tr = node('tr'), td = node('td', 'No hay movimientos aquí. Puedes importar un extracto o cambiar los filtros.', 'empty'); td.colSpan = 6; tr.append(td); tbody.append(tr); }
   $('#count').textContent = total ? `${offset + 1}–${Math.min(offset + 50, total)} de ${total} movimientos` : '0 movimientos';
   $('#previous').disabled = offset === 0; $('#next').disabled = offset + 50 >= total;
+  await loadMonthProgress(month);
+}
+async function loadMonthProgress(month) {
+  $('#month-progress').replaceChildren(); $('#month-progress-banks').replaceChildren();
+  if (!month) return;
+  const r = await api(`/api/monthly-progress?month=${encodeURIComponent(month)}`);
+  for (const [label, value] of [['Importados', r.total.imported],
+      ['Propuesta completa al importar', r.total.complete_at_import],
+      ['Con alguna regla al importar', r.total.with_rules_at_import],
+      ['Con ML al importar', r.total.with_ml_at_import],
+      ['Confirmados por ti', r.total.confirmed]]) {
+    const card = node('div', undefined, 'card'); card.append(node('p', label, 'hint'), node('strong', String(value)));
+    $('#month-progress').append(card);
+  }
+  for (const bank of r.banks) {
+    const tr = node('tr');
+    for (const value of [bank.bank, bank.imported, bank.complete_at_import, bank.confirmed]) tr.append(node('td', String(value)));
+    $('#month-progress-banks').append(tr);
+  }
 }
 async function edit(id) {
   [selected, vocabulary] = await Promise.all([api(`/api/transactions/${id}`), api('/api/vocabulary')]);
   $('#editor-title').textContent = selected.transaction.concept_raw;
   $('#editor-summary').textContent = `${selected.transaction.source_bank} · ${selected.transaction.bank_date} · ${euro.format(selected.transaction.amount_eur)}`;
   const form = $('#confirmation'); form.reset(); $('#editor-error').hidden = true; $('#custom-label').hidden = true;
+  const reservedForForwardTest = selected.transaction.bank_date >= '2026-05-01' && selected.transaction.bank_date < '2026-10-01';
+  form.elements.training.disabled = reservedForForwardTest;
+  $('#training-note').textContent = reservedForForwardTest ? 'Mayo–septiembre de 2026 se usan para probar reglas y propuestas mes a mes; sus correcciones no entrenan este baseline.' : '';
   for (const input of $('#fields').querySelectorAll('[data-target]')) {
     const values = vocabulary.fields[input.name] || [];
     if (input.tagName === 'SELECT') {
@@ -149,8 +176,11 @@ $('#close-editor').onclick = $('#cancel-editor').onclick = () => $('#editor').cl
 $('#upload').onsubmit = guarded(async (event) => {
   event.preventDefault(); const button = event.currentTarget.querySelector('button'); button.disabled = true;
   try { const r = await api('/api/imports', {method: 'POST', body: new FormData(event.currentTarget)});
-    $('#import-result').hidden = false; $('#import-result').textContent = `${r.inserted} movimientos nuevos\n${r.duplicates} duplicados\n${r.grouped_fills} fills agrupados\n${r.skipped_non_cash} migraciones sin efectivo omitidas${r.same_file ? '\nEste extracto ya estaba importado.' : ''}`;
-    notice('Extracto procesado. Ya puedes revisar sus movimientos.'); offset = 0; await loadTransactions();
+    $('#import-result').hidden = false; $('#import-result').textContent = `${r.inserted} movimientos nuevos de ${r.month}\n${r.duplicates} duplicados\n${r.complete_proposals || 0} propuestas completas al importar\n${r.grouped_fills} fills agrupados en el archivo\n${r.skipped_non_cash} migraciones sin efectivo omitidas${r.same_file ? '\nEste extracto ya estaba importado para este mes.' : ''}`;
+    $('#filter-month').value = $('#import-month').value;
+    try { localStorage.setItem('gzp-finance-review-month', $('#filter-month').value); } catch (_) {}
+    notice('Mes importado. Revisa las propuestas antes de confirmarlas.'); offset = 0;
+    await showPanel('review');
   } finally { button.disabled = false; }
 });
 async function loadRules() {
@@ -207,13 +237,19 @@ async function loadValidation() {
   $('#excel-total-count').textContent=String(r.excel_total.count);
   $('#excel-total-net').textContent=euro.format(r.excel_total.net);
 }
-for (const tab of document.querySelectorAll('.tab')) tab.onclick = guarded(async () => {
-  for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== tab.dataset.panel;
-  for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t === tab);
-  if (tab.dataset.panel === 'review') await loadTransactions(); if (tab.dataset.panel === 'rules') await loadRules();
-  if (tab.dataset.panel === 'history') await loadHistory(); if (tab.dataset.panel === 'validation') await loadValidation();
-});
+async function showPanel(panel) {
+  for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== panel;
+  for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t.dataset.panel === panel);
+  if (panel === 'review') await loadTransactions(); if (panel === 'rules') await loadRules();
+  if (panel === 'history') await loadHistory(); if (panel === 'validation') await loadValidation();
+}
+for (const tab of document.querySelectorAll('.tab')) tab.onclick = guarded(() => showPanel(tab.dataset.panel));
 for (const id of ['filter-bank', 'filter-status', 'filter-origin']) $('#' + id).onchange = guarded(async () => { offset = 0; await loadTransactions(); });
+$('#filter-month').onchange = guarded(async () => {
+  $('#import-month').value = $('#filter-month').value;
+  try { localStorage.setItem('gzp-finance-review-month', $('#filter-month').value); } catch (_) {}
+  offset = 0; await loadTransactions();
+});
 $('#history-bank').onchange = guarded(async () => { historyOffset = 0; await loadHistory(); });
 $('#history-previous').onclick = guarded(async () => { historyOffset = Math.max(0,historyOffset-50); await loadHistory(); });
 $('#history-next').onclick = guarded(async () => { historyOffset += 50; await loadHistory(); });

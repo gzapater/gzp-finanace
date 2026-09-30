@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -19,6 +20,14 @@ TARGET_LABELS = dict(zip(TARGETS, ("Tipo de transacción", "Tipo de gasto", "Fis
     "Categoría general", "Subtipo", "Activo", "Detalle", "Detalle 2")))
 MATCH_KEYS = {"source_bank", "concept_key", "bank_type", "bank_category", "direction",
               "amount_cents", "amount_cents_min", "amount_cents_max", "counterparty_iban"}
+
+
+def month_bounds(month: str) -> tuple[date, date]:
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+        raise ValueError("Selecciona un mes válido (AAAA-MM)")
+    start = date.fromisoformat(f"{month}-01")
+    end = date(start.year + 1, 1, 1) if start.month == 12 else date(start.year, start.month + 1, 1)
+    return start, end
 
 
 def digest(value: Any) -> str:
