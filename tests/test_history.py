@@ -38,6 +38,8 @@ def test_reference_before_import_links_later_and_never_confirms_or_trains(sessio
     stats=validation_summary(session)
     assert stats['imported_records'] == 1 and stats['new_records'] == 0
     assert stats['banks'][2]['comparison']['matches']
+    assert stats['banks'][2]['excel_dates']['first'] == '2026-03-31'
+    assert stats['banks'][2]['imported_dates']['first'] == '2026-04-01'
 
 
 def test_duplicate_payments_are_ambiguous_not_arbitrarily_linked(session,tmp_path):

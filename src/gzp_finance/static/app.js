@@ -206,8 +206,9 @@ async function loadValidation() {
     for (const v of [b.bank,b.excel.count]) row.append(node('td',String(v)));
     row.append(node('td',euro.format(b.excel.net),'amount'),node('td',String(c.excel.count)));
     for (const v of [c.excel.net,c.bank.net,c.delta.net]) row.append(node('td',euro.format(v),'amount'));
-    const result=node('td'); result.append(node('strong', c.excel.count ? c.matches ? 'Coincide el subconjunto' : `${c.mismatched_rows} filas con diferencias` : 'Sin filas comparables'));
+    const result=node('td'); result.append(node('strong', c.excel.count ? c.matches ? `${c.excel.count} filas comparadas sin diferencia` : `${c.mismatched_rows} filas con diferencias` : 'Sin filas comparables'));
     result.append(node('small', `${b.unlinked_rows} sin vincular · ${b.ambiguous_rows} ambiguas · ${b.grouped_rows} filas agrupadas · ${b.excel.missing_amount} sin importe`));
+    if (b.imported_dates.first && b.excel_dates.first) result.append(node('small', `Extracto bancario: ${b.imported_dates.first} a ${b.imported_dates.last} · Excel: ${b.excel_dates.first} a ${b.excel_dates.last}`));
     result.append(node('small', `Fuera de comparación: ${b.outside_comparison.count} filas · ${euro.format(b.outside_comparison.net)} netos${b.text_amount_rows ? ` · ${b.text_amount_rows} importes escritos como texto` : ''}`));
     result.append(node('small', `Diferencia entradas ${euro.format(c.delta.income)} · salidas ${euro.format(c.delta.expenses)}`)); row.append(result); $('#excel-comparison').append(row);
   }

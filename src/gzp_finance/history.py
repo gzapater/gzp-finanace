@@ -123,6 +123,8 @@ def validation_summary(session) -> dict:
     for bank in BANKS:
         imported = [t for t in txs if t.source_bank == bank]
         original = [r for r in refs if r.source_bank == bank]
+        imported_dates = [t.bank_date for t in imported]
+        original_dates = [r.manual_date for r in original]
         # One original row per bank movement; grouped/ambiguous relations are reported separately.
         links = defaultdict(list)
         for r in original:
@@ -137,6 +139,10 @@ def validation_summary(session) -> dict:
                   for k in ("income", "expenses", "net")}
         mismatched = sum(by_id[r.transaction_id].amount_eur != r.amount_eur for r in comparable)
         banks.append({"bank": bank, "imported": totals(t.amount_eur for t in imported),
+            "imported_dates": {"first": str(min(imported_dates)) if imported_dates else None,
+                               "last": str(max(imported_dates)) if imported_dates else None},
+            "excel_dates": {"first": str(min(original_dates)) if original_dates else None,
+                            "last": str(max(original_dates)) if original_dates else None},
             "new": totals(t.amount_eur for t in imported if t.id not in linked_ids),
             "historical": totals(t.amount_eur for t in imported if t.id in linked_ids),
             "excel": totals(r.amount_eur if r.excel_amount_is_numeric else None for r in original),
