@@ -214,6 +214,16 @@ for (const tab of document.querySelectorAll('.tab')) tab.onclick = guarded(async
   if (tab.dataset.panel === 'history') await loadHistory(); if (tab.dataset.panel === 'validation') await loadValidation();
 });
 for (const id of ['filter-bank', 'filter-status', 'filter-origin']) $('#' + id).onchange = guarded(async () => { offset = 0; await loadTransactions(); });
+$('#reprocess-rules').onclick = guarded(async () => {
+  const button = $('#reprocess-rules'); button.disabled = true;
+  notice('Reprocesando los movimientos pendientes…');
+  try {
+    const bank = $('#filter-bank').value;
+    const result = await api(`/api/reclassify?${new URLSearchParams({bank})}`, {method: 'POST'});
+    offset = 0; await loadTransactions();
+    notice(`${result.reclassified} movimientos pendientes revisados · ${result.changed} clasificaciones actualizadas.`);
+  } finally { button.disabled = false; }
+});
 $('#history-bank').onchange = guarded(async () => { historyOffset = 0; await loadHistory(); });
 $('#history-previous').onclick = guarded(async () => { historyOffset = Math.max(0,historyOffset-50); await loadHistory(); });
 $('#history-next').onclick = guarded(async () => { historyOffset += 50; await loadHistory(); });

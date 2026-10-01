@@ -250,12 +250,21 @@ def create_app(engine=None, *, username=None, password=None):
             return {"rule_id": rule_id}
 
     @app.post("/api/reclassify", dependencies=[Depends(authenticate)])
-    def reclassify():
+    def reclassify(bank: str = ""):
+        if bank and bank not in BANKS:
+            raise HTTPException(422, "Banco inválido")
         with session_scope(engine) as s:
-            models, count = active_bundle(s), 0
-            for tx in s.scalars(select(Transaction)):
-                if not classify(s, tx, models=models).confirmed_by_user:
-                    count += 1
-            return {"reclassified": count}
+            models, count, changed = active_bundle(s), 0, 0
+            query = select(Transaction, Classification).join(
+                Classification, Classification.transaction_id == Transaction.id
+            ).where(Classification.confirmed_by_user.is_(False))
+            if bank:
+                query = query.where(Transaction.source_bank == bank)
+            for tx, current in s.execute(query).all():
+                revision = current.revision
+                updated = classify(s, tx, models=models)
+                count += 1
+                changed += updated.revision != revision
+            return {"reclassified": count, "changed": changed}
 
     return app
