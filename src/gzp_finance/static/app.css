@@ -7,3 +7,5 @@
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:22px 0 30px}.kpis .card{padding:20px}.kpis p{margin:0 0 12px}.kpis strong{font-size:30px;font-variant-numeric:tabular-nums}nav{flex-wrap:wrap;gap:24px}#validation td small{white-space:normal;max-width:300px}#history td:nth-child(4){min-width:210px}
 
 .review-actions{display:flex;align-items:center;gap:16px;margin:18px 0}.review-actions .hint{margin:0}@media(max-width:750px){.review-actions{align-items:flex-start;flex-direction:column}}
+
+.bulk-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:18px 0}.bulk-actions .checkbox{margin:0}.bulk-actions #bulk-count{font-size:12px;color:var(--muted)}.select-col{width:72px;text-align:center;padding-right:0}.select-col input{width:17px;height:17px;cursor:pointer}.select-all-label{display:inline-flex;flex-direction:row;align-items:center;gap:5px;cursor:pointer}
