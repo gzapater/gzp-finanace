@@ -5,6 +5,12 @@ let offset = 0, total = 0, selected = null;
 let historyOffset = 0, historyTotal = 0;
 let vocabulary = {fields: {}, subtypes: {}};
 const NEW_VALUE = '__finance_add_label__';
+const REVIEW_FIELDS = [
+  ['target_tipo_transaccion', 'Tipo'], ['target_tipo_gasto', 'Tipo de gasto'],
+  ['target_fiscalidad', 'Fiscalidad'], ['target_categoria_general', 'Categoría'],
+  ['target_subtipo', 'Subtipo'], ['target_activo', 'Activo'],
+  ['target_detalle', 'Detalle'], ['target_detalle2', 'Detalle 2'],
+];
 
 function selectOptions(field, values, current = '') {
   const select = $(`[data-target="${field}"]`);
@@ -83,6 +89,16 @@ async function api(path, options = {}) {
 function node(tag, text, cls) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
 function notice(message, error = false) { $('#notice').textContent = message; $('#notice').hidden = false; $('#notice').className = error ? 'error' : 'success'; }
 function guarded(fn) { return async (...args) => { try { await fn(...args); } catch(e) { notice(e.message, true); } }; }
+function updateBulkSelection() {
+  const boxes = [...document.querySelectorAll('#transactions input[data-bulk-id]')];
+  const selected = boxes.filter(box => box.checked).length;
+  const all = $('#select-page');
+  all.disabled = boxes.length === 0;
+  all.checked = boxes.length > 0 && selected === boxes.length;
+  all.indeterminate = selected > 0 && selected < boxes.length;
+  $('#bulk-confirm').disabled = selected === 0;
+  $('#bulk-count').textContent = `${selected} seleccionadas de esta página`;
+}
 
 async function loadTransactions() {
   const params = new URLSearchParams({bank: $('#filter-bank').value, status: $('#filter-status').value, origin: $('#filter-origin').value, offset, limit: 50});
@@ -90,24 +106,32 @@ async function loadTransactions() {
   const tbody = $('#transactions'); tbody.replaceChildren();
   for (const tx of result.items) {
     const tr = node('tr'); const date = node('td');
+    const selection = node('td', undefined, 'select-col');
+    if (!tx.confirmed && tx.status === 'completa') {
+      const box = document.createElement('input'); box.type = 'checkbox';
+      box.dataset.bulkId = tx.id; box.dataset.revision = String(tx.revision);
+      box.setAttribute('aria-label', `Seleccionar movimiento de ${tx.source_bank} del ${tx.bank_date}: ${tx.concept_raw}`);
+      box.onchange = updateBulkSelection; selection.append(box);
+    }
     date.append(node('strong', new Date(tx.bank_date + 'T12:00:00').toLocaleDateString('es-ES')), node('small', tx.source_bank));
     date.append(node('small', tx.origin === 'historical' ? 'Vinculado al Excel' : 'Sin etiqueta histórica'));
     const classification = node('td');
-    for (const f of ['target_tipo_transaccion', 'target_categoria_general', 'target_subtipo']) {
+    for (const [f, label] of REVIEW_FIELDS) {
       if (tx.values[f]) {
         const p = tx.provenance[f];
-        classification.append(node('div', `${tx.values[f]}${p ? ` · ${p.engine === 'manual' ? 'manual' : p.engine === 'rule' ? 'regla' : 'ML'}${p.engine === 'ml' ? ` ${Math.round(p.confidence * 100)}%` : ''}` : ''}`, 'classification'));
+        classification.append(node('div', `${label}: ${tx.values[f]}${p ? ` · ${p.engine === 'manual' ? 'manual' : p.engine === 'rule' ? 'regla' : 'ML'}${p.engine === 'ml' ? ` ${Math.round(p.confidence * 100)}%` : ''}` : ''}`, 'classification'));
       }
     }
     if (!classification.childNodes.length) classification.append(node('span', 'Sin propuesta', 'muted'));
     const state = node('td'); state.append(node('span', tx.status, `badge ${tx.confirmed ? 'confirmed' : ''}`));
     const action = node('td'), button = node('button', tx.confirmed ? 'Editar' : 'Revisar', 'secondary');
     button.onclick = guarded(() => edit(tx.id)); action.append(button);
-    tr.append(date, node('td', tx.concept_raw), node('td', euro.format(tx.amount_eur), 'amount'), classification, state, action); tbody.append(tr);
+    tr.append(selection, date, node('td', tx.concept_raw), node('td', euro.format(tx.amount_eur), 'amount'), classification, state, action); tbody.append(tr);
   }
-  if (!result.items.length) { const tr = node('tr'), td = node('td', 'No hay movimientos aquí. Puedes importar un extracto o cambiar los filtros.', 'empty'); td.colSpan = 6; tr.append(td); tbody.append(tr); }
+  if (!result.items.length) { const tr = node('tr'), td = node('td', 'No hay movimientos aquí. Puedes importar un extracto o cambiar los filtros.', 'empty'); td.colSpan = 7; tr.append(td); tbody.append(tr); }
   $('#count').textContent = total ? `${offset + 1}–${Math.min(offset + 50, total)} de ${total} movimientos` : '0 movimientos';
   $('#previous').disabled = offset === 0; $('#next').disabled = offset + 50 >= total;
+  updateBulkSelection();
 }
 async function edit(id) {
   [selected, vocabulary] = await Promise.all([api(`/api/transactions/${id}`), api('/api/vocabulary')]);
@@ -214,6 +238,35 @@ for (const tab of document.querySelectorAll('.tab')) tab.onclick = guarded(async
   if (tab.dataset.panel === 'history') await loadHistory(); if (tab.dataset.panel === 'validation') await loadValidation();
 });
 for (const id of ['filter-bank', 'filter-status', 'filter-origin']) $('#' + id).onchange = guarded(async () => { offset = 0; await loadTransactions(); });
+$('#select-page').onchange = (event) => {
+  for (const box of document.querySelectorAll('#transactions input[data-bulk-id]')) box.checked = event.target.checked;
+  updateBulkSelection();
+};
+$('#bulk-confirm').onclick = guarded(async () => {
+  const items = [...document.querySelectorAll('#transactions input[data-bulk-id]:checked')].map(box =>
+    ({transaction_id: box.dataset.bulkId, revision: Number(box.dataset.revision)}));
+  if (!items.length) return;
+  $('#bulk-confirm').disabled = true;
+  try {
+    const result = await api('/api/transactions/confirm-bulk', {method: 'POST', body: {items, training: $('#bulk-training').checked}});
+    await loadTransactions();
+    $('#bulk-training').checked = false;
+    notice(`${result.confirmed} movimientos confirmados. Este lote no ha creado reglas nuevas.`);
+  } catch (error) {
+    await loadTransactions();
+    throw error;
+  } finally { updateBulkSelection(); }
+});
+$('#reprocess-rules').onclick = guarded(async () => {
+  const button = $('#reprocess-rules'); button.disabled = true;
+  notice('Reprocesando los movimientos pendientes…');
+  try {
+    const bank = $('#filter-bank').value;
+    const result = await api(`/api/reclassify?${new URLSearchParams({bank})}`, {method: 'POST'});
+    offset = 0; await loadTransactions();
+    notice(`${result.reclassified} movimientos pendientes revisados · ${result.changed} clasificaciones actualizadas.`);
+  } finally { button.disabled = false; }
+});
 $('#history-bank').onchange = guarded(async () => { historyOffset = 0; await loadHistory(); });
 $('#history-previous').onclick = guarded(async () => { historyOffset = Math.max(0,historyOffset-50); await loadHistory(); });
 $('#history-next').onclick = guarded(async () => { historyOffset += 50; await loadHistory(); });

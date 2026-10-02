@@ -35,6 +35,16 @@ class Toggle(BaseModel):
     enabled: bool
 
 
+class BulkConfirmationItem(BaseModel):
+    transaction_id: str
+    revision: int
+
+
+class BulkConfirmation(BaseModel):
+    items: list[BulkConfirmationItem] = Field(min_length=1, max_length=50)
+    training: bool = False
+
+
 def create_app(engine=None, *, username=None, password=None):
     username = username or os.getenv("APP_USER")
     password = password or os.getenv("APP_PASSWORD")
@@ -216,6 +226,21 @@ def create_app(engine=None, *, username=None, password=None):
                     classify(s, tx, models=models)
             return result
 
+    @app.post("/api/transactions/confirm-bulk", dependencies=[Depends(authenticate)])
+    def confirm_bulk(body: BulkConfirmation):
+        ids = [item.transaction_id for item in body.items]
+        if len(ids) != len(set(ids)):
+            raise HTTPException(422, "Hay movimientos repetidos en la selección")
+        with session_scope(engine) as s:
+            for item in sorted(body.items, key=lambda item: item.transaction_id):
+                current = s.scalar(select(Classification).where(
+                    Classification.transaction_id == item.transaction_id).with_for_update())
+                if not current or current.confirmed_by_user or review_status(current) != "completa":
+                    raise ValueError("La selección incluye un movimiento ya confirmado o sin propuesta completa")
+                confirm(s, item.transaction_id, dict(current.values), training=body.training,
+                        revision=item.revision)
+            return {"confirmed": len(body.items)}
+
     @app.get("/api/rules", dependencies=[Depends(authenticate)])
     def rules():
         with session_scope(engine) as s:
@@ -250,12 +275,21 @@ def create_app(engine=None, *, username=None, password=None):
             return {"rule_id": rule_id}
 
     @app.post("/api/reclassify", dependencies=[Depends(authenticate)])
-    def reclassify():
+    def reclassify(bank: str = ""):
+        if bank and bank not in BANKS:
+            raise HTTPException(422, "Banco inválido")
         with session_scope(engine) as s:
-            models, count = active_bundle(s), 0
-            for tx in s.scalars(select(Transaction)):
-                if not classify(s, tx, models=models).confirmed_by_user:
-                    count += 1
-            return {"reclassified": count}
+            models, count, changed = active_bundle(s), 0, 0
+            query = select(Transaction, Classification).join(
+                Classification, Classification.transaction_id == Transaction.id
+            ).where(Classification.confirmed_by_user.is_(False))
+            if bank:
+                query = query.where(Transaction.source_bank == bank)
+            for tx, current in s.execute(query).all():
+                revision = current.revision
+                updated = classify(s, tx, models=models)
+                count += 1
+                changed += updated.revision != revision
+            return {"reclassified": count, "changed": changed}
 
     return app

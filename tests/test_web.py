@@ -1,9 +1,12 @@
 import re
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from gzp_finance.db import Classification, Prediction, Rule, TrainingExample
 from gzp_finance.web import create_app
-from test_importers import MI
+from test_importers import MI, TR
 
 
 def client(engine):
@@ -16,6 +19,9 @@ def test_auth_csrf_and_review_flow(engine):
     c.auth = ("test", "synthetic-test-password")
     index = c.get("/")
     assert index.status_code == 200 and index.headers["cache-control"] == "no-store"
+    assert 'id="reprocess-rules"' in index.text
+    assert 'id="bulk-confirm"' in index.text
+    assert 'id="select-page"' in index.text
     assert index.text.count('<select id="target_') == 5
     assert index.text.count('class="suggestions" role="listbox"') == 3
     token = re.search(r'name="csrf-token" content="([^"]+)"', index.text)[1]
@@ -31,6 +37,91 @@ def test_auth_csrf_and_review_flow(engine):
     rule = c.get("/api/rules").json()[0]
     assert rule["source"] == "user_confirmed"
     assert c.post("/api/reclassify", headers={"origin": "https://attacker.invalid"}).status_code == 403
+
+
+def test_reprocess_pending_rules_preserves_confirmations_and_replaces_proposals(engine):
+    c = client(engine); c.auth = ("test", "synthetic-test-password")
+    token = re.search(r'name="csrf-token" content="([^"]+)"', c.get("/").text)[1]
+    c.headers["x-csrf-token"] = token
+    statement = MI + "02/04/2026;03/04/2026;Fondo ejemplo;-1.299,87;EUR\n"
+    assert c.post("/api/imports", data={"bank": "MyInvestor"},
+                  files={"file": ("a.csv", statement)}).json()["inserted"] == 2
+    items = c.get("/api/transactions?bank=MyInvestor").json()["items"]
+    confirmed, pending = items[0], items[1]
+    response = c.post(f"/api/transactions/{confirmed['id']}/confirm", json={
+        "values": {"target_categoria_general": "Manual"},
+        "revision": confirmed["revision"], "training": True, "rule_mode": "none"})
+    assert response.status_code == 200
+    confirmed_revision = response.json()["revision"]
+    with Session(engine) as s:
+        s.add(Rule(id="synthetic-rule", kind="test", source="user_confirmed", priority=1200,
+                   match={"source_bank": "MyInvestor", "concept_key": "fondo ejemplo"},
+                   set_values={"target_categoria_general": "Automated"}, support=1))
+        s.commit()
+    first = c.post("/api/reclassify?bank=MyInvestor")
+    assert first.status_code == 200
+    assert first.json() == {"reclassified": 1, "changed": 1}
+    detail = c.get(f"/api/transactions/{pending['id']}").json()
+    assert detail["values"]["target_categoria_general"] == "Automated"
+    assert detail["provenance"]["target_categoria_general"]["engine"] == "rule"
+    assert len(detail["predictions"]) == 1
+    second = c.post("/api/reclassify?bank=MyInvestor")
+    assert second.json() == {"reclassified": 1, "changed": 0}
+    assert len(c.get(f"/api/transactions/{pending['id']}").json()["predictions"]) == 1
+    assert c.post("/api/reclassify?bank=Unknown").status_code == 422
+    with Session(engine) as s:
+        saved = s.scalar(select(Classification).where(Classification.transaction_id == confirmed["id"]))
+        assert saved.values == {"target_categoria_general": "Manual"}
+        assert saved.revision == confirmed_revision
+        assert s.scalar(select(func.count()).select_from(TrainingExample).where(
+            TrainingExample.transaction_id == confirmed["id"])) == 1
+        assert s.scalar(select(func.count()).select_from(Prediction).where(
+            Prediction.transaction_id == pending["id"])) == 1
+
+
+def test_bulk_confirmation_is_atomic_and_only_accepts_current_complete_proposals(engine):
+    with Session(engine) as s:
+        s.add(Rule(id="synthetic-complete", kind="test", source="user_confirmed", priority=1200,
+                   match={"source_bank": "MyInvestor"}, set_values={
+                       "target_tipo_transaccion": "Expense", "target_categoria_general": "Investing",
+                       "target_subtipo": "Fund"}, support=1))
+        s.commit()
+    c = client(engine); c.auth = ("test", "synthetic-test-password")
+    token = re.search(r'name="csrf-token" content="([^"]+)"', c.get("/").text)[1]
+    c.headers["x-csrf-token"] = token
+    statement = (MI + "02/04/2026;03/04/2026;Fondo ejemplo;-20,00;EUR\n"
+                 "03/04/2026;04/04/2026;Otro fondo;-30,00;EUR\n")
+    assert c.post("/api/imports", data={"bank": "MyInvestor"},
+                  files={"file": ("a.csv", statement)}).json()["inserted"] == 3
+    assert c.post("/api/imports", data={"bank": "Trade Republic"},
+                  files={"file": ("b.csv", TR)}).json()["inserted"] == 1
+    my = c.get("/api/transactions?bank=MyInvestor&status=pending").json()["items"]
+    trade = c.get("/api/transactions?bank=Trade%20Republic").json()["items"][0]
+    assert len(my) == 3 and all(item["status"] == "completa" for item in my)
+    assert trade["status"] == "sin clasificar"
+    selected = [{"transaction_id": item["id"], "revision": item["revision"]} for item in my[:2]]
+    url = "/api/transactions/confirm-bulk"
+
+    stale = [selected[0], {**selected[1], "revision": selected[1]["revision"] - 1}]
+    assert c.post(url, json={"items": stale, "training": True}).status_code == 422
+    assert c.get("/api/transactions?bank=MyInvestor&status=confirmed").json()["total"] == 0
+    assert c.post(url, json={"items": [selected[0], selected[0]]}).status_code == 422
+    assert c.post(url, json={"items": [selected[0], {
+        "transaction_id": trade["id"], "revision": trade["revision"]}]}).status_code == 422
+    assert c.get("/api/transactions?status=confirmed").json()["total"] == 0
+
+    response = c.post(url, json={"items": selected, "training": True})
+    assert response.status_code == 200 and response.json() == {"confirmed": 2}
+    assert c.get("/api/transactions?bank=MyInvestor&status=confirmed").json()["total"] == 2
+    assert c.get("/api/transactions?bank=MyInvestor&status=pending").json()["total"] == 1
+    assert c.post(url, json={"items": selected, "training": True}).status_code == 422
+    last = {"transaction_id": my[2]["id"], "revision": my[2]["revision"]}
+    assert c.post(url, json={"items": [last]}).json() == {"confirmed": 1}
+    with Session(engine) as s:
+        examples = list(s.scalars(select(TrainingExample)))
+        assert len(examples) == 3 and sum(e.enabled for e in examples) == 2
+        assert all(len(e.prediction_snapshot) == 3 for e in examples)
+        assert s.scalar(select(func.count()).select_from(Rule)) == 1
 
 
 def test_invalid_import_is_atomic(engine):

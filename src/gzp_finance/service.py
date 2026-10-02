@@ -5,7 +5,7 @@ import hashlib
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 
 from .db import (Classification, HistoricalRecord, Import, ModelVersion, Prediction, Rule,
                  TrainingExample, Transaction, TransactionComponent, now, uid)
@@ -29,6 +29,9 @@ def classify(session, tx: Transaction, *, models=None) -> Classification:
     rules = [r.spec() for r in session.scalars(select(Rule).where(Rule.enabled.is_(True)))]
     result = apply_rules(tx.context(), rules)
     values, provenance = dict(result["values"]), {}
+    # Pending proposals represent the latest pass. Confirmed transactions retain
+    # their immutable TrainingExample prediction snapshot and are returned above.
+    session.execute(delete(Prediction).where(Prediction.transaction_id == tx.id))
     for field, value in values.items():
         evidence = result["evidence"][field]
         provenance[field] = {"engine": "rule", "confidence": 1, **evidence}
@@ -47,11 +50,13 @@ def classify(session, tx: Transaction, *, models=None) -> Classification:
                 values[field] = prediction["value"]
                 provenance[field] = {"engine": "ml", "confidence": prediction["confidence"],
                                      "model_version": models.version}
+    changed = not current or current.values != values or current.provenance != provenance
     if not current:
         current = Classification(transaction_id=tx.id)
         session.add(current)
     current.values, current.provenance = values, provenance
-    current.revision = (current.revision or 0) + 1
+    if changed:
+        current.revision = (current.revision or 0) + 1
     session.flush()
     return current
 

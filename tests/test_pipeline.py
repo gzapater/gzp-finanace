@@ -52,6 +52,12 @@ def test_rules_protect_even_blank_values_and_ml_is_not_training(session):
     assert c.provenance["target_subtipo"]["engine"] == "ml"
     assert session.scalar(select(func.count()).select_from(TrainingExample)) == 0
     assert session.scalar(select(Prediction).where(Prediction.field == "target_activo")).accepted is False
+    prediction_count = session.scalar(select(func.count()).select_from(Prediction))
+    revision = c.revision
+    classify(session, tx, models=Models())
+    classify(session, tx, models=Models())
+    assert session.scalar(select(func.count()).select_from(Prediction)) == prediction_count
+    assert c.revision == revision
 
 
 def test_confirmation_audit_revision_and_opt_out(session):
